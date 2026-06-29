@@ -1,0 +1,32 @@
+[package]
+name = "tpp"
+version = "0.1.0"
+edition = "2021"
+description = "tmux++ — an ergonomic tmux wrapper for sharing, running, capturing, and pasting into sessions (human- and agent-friendly)"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/shadowfax92/tpp"
+readme = "README.md"
+keywords = ["tmux", "terminal", "multiplexer", "cli", "agents"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "tpp"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "wrap_help"] }
+clap_complete = "4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+strip = true
+lto = "thin"
+opt-level = "z"
+codegen-units = 1
+panic = "abort"

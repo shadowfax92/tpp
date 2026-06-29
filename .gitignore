@@ -1,0 +1,6 @@
+/target
+/bin/
+.DS_Store
+.llm/
+.grove/
+*.swp
