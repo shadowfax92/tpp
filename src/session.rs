@@ -75,6 +75,9 @@ pub fn prefixed_target(cfg: &Config, target: &str) -> String {
     if raw.starts_with(['%', '@', '$', '{', '!']) {
         return target.to_string();
     }
+    if !cfg.session_prefix.is_empty() && raw.starts_with(&cfg.session_prefix) {
+        return target.to_string();
+    }
     let split_at = raw.find([':', '.']).unwrap_or(raw.len());
     let (session, suffix) = raw.split_at(split_at);
     if session.is_empty() {
@@ -291,5 +294,13 @@ mod tests {
         assert_eq!(prefixed_target(&Config::default(), "@1"), "@1");
         assert_eq!(prefixed_target(&Config::default(), "$2"), "$2");
         assert_eq!(prefixed_target(&Config::default(), "=%0"), "=%0");
+    }
+
+    #[test]
+    fn prefixed_target_does_not_double_prefix_with_dot_prefix() {
+        let cfg = cfg("team.");
+
+        assert_eq!(prefixed_target(&cfg, "api:0"), "team.api:0");
+        assert_eq!(prefixed_target(&cfg, "team.api:0"), "team.api:0");
     }
 }
