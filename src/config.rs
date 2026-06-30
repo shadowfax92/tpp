@@ -6,7 +6,13 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub const DEFAULT_SESSION_PREFIX: &str = "tpp/";
+
+fn default_session_prefix() -> String {
+    DEFAULT_SESSION_PREFIX.to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// tmux socket name (`tmux -L <name>`). Empty/unset = the default tmux server, so tpp
@@ -14,6 +20,9 @@ pub struct Config {
     pub socket: Option<String>,
     /// Command run by `tpp new`/`tpp run` when none is given. Defaults to `$SHELL`.
     pub shell: Option<String>,
+    /// Prefix applied to all tpp-created tmux session names. Empty = no prefix.
+    #[serde(default = "default_session_prefix")]
+    pub session_prefix: String,
     pub scope: ScopeCfg,
     pub ls: LsCfg,
     pub send: SendCfg,
@@ -111,6 +120,24 @@ pub struct WaitCfg {
     pub timeout_ms: u64,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            socket: None,
+            shell: None,
+            session_prefix: default_session_prefix(),
+            scope: ScopeCfg::default(),
+            ls: LsCfg::default(),
+            send: SendCfg::default(),
+            new: NewCfg::default(),
+            capture: CaptureCfg::default(),
+            tail: TailCfg::default(),
+            exit: ExitCfg::default(),
+            wait: WaitCfg::default(),
+        }
+    }
+}
+
 impl Default for ScopeCfg {
     fn default() -> Self {
         Self {
@@ -194,6 +221,9 @@ socket = ""
 # Command for `tpp new`/`tpp run` when you don't pass one. Empty = $SHELL.
 shell = ""
 
+# Prefix applied to all tpp-created tmux session names. Empty = no prefix.
+session_prefix = "tpp/"
+
 [scope]
 # How sessions are grouped so they're "shared in a directory":
 #   git  = nearest git toplevel (a worktree is its own scope)   [default]
@@ -227,3 +257,32 @@ prune_hours = 24         # forget recorded exited sessions after N hours
 stable_for_ms = 750      # output must be unchanged this long to count as "idle"
 timeout_ms = 30000       # default upper bound for `wait`
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::{Config, STARTER_CONFIG};
+
+    #[test]
+    fn default_session_prefix_is_tpp_path() {
+        assert_eq!(Config::default().session_prefix, "tpp/");
+    }
+
+    #[test]
+    fn parse_older_config_uses_default_session_prefix() {
+        let cfg = Config::parse("socket = \"\"\n").unwrap();
+
+        assert_eq!(cfg.session_prefix, "tpp/");
+    }
+
+    #[test]
+    fn parse_allows_empty_session_prefix() {
+        let cfg = Config::parse("session_prefix = \"\"\n").unwrap();
+
+        assert_eq!(cfg.session_prefix, "");
+    }
+
+    #[test]
+    fn starter_config_documents_session_prefix() {
+        assert!(STARTER_CONFIG.contains("session_prefix = \"tpp/\""));
+    }
+}
