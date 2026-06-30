@@ -15,7 +15,7 @@ use clap::{Args, Parser, Subcommand};
     version,
     about = "tmux++ — share, run, capture, and paste into tmux sessions",
     long_about = "tmux++ (tpp) — an ergonomic wrapper around tmux for humans and agents.\n\n\
-        Share sessions within a directory, run commands in detached sessions, capture and \
+        List all tpp sessions, run commands in detached sessions, capture and \
         follow their output, and paste prompts in verbatim. Sessions live in your normal \
         tmux server, so `tmx`, `grove`, and plain `tmux` all see them.",
     disable_help_subcommand = true,

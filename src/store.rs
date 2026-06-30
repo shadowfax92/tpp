@@ -306,4 +306,24 @@ mod tests {
         assert!(agents.list()?.is_empty());
         Ok(())
     }
+
+    #[test]
+    fn implicit_tmux_socket_path_does_not_read_legacy_default_records() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let paths = paths(tmp.path());
+        let root = paths.exited_dir();
+        create_private_dir_all(&root)?;
+        let (json, log) = Store::paths_for_dir(&root, "legacy");
+        std::fs::write(&log, "legacy log")?;
+        std::fs::write(
+            &json,
+            serde_json::to_vec_pretty(&record("legacy", "old", 1))?,
+        )?;
+
+        let inherited = Store::new(&paths, Some("path:/tmp/tmux-501/custom"));
+
+        assert_eq!(inherited.read_log("legacy")?, None);
+        assert!(inherited.list()?.is_empty());
+        Ok(())
+    }
 }

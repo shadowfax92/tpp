@@ -206,7 +206,8 @@ pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
 
     let show_exited = args.exited || (!args.no_exited && ctx.cfg.ls.show_exited_hours > 0);
     if show_exited {
-        let store = Store::new(&ctx.paths, ctx.tmux.socket());
+        let store_socket = ctx.tmux.store_socket();
+        let store = Store::new(&ctx.paths, store_socket.as_deref());
         let hours = if args.exited && ctx.cfg.ls.show_exited_hours == 0 {
             24
         } else {
@@ -392,7 +393,8 @@ pub fn exit(ctx: &Ctx, args: ExitArgs) -> Result<()> {
 }
 
 pub fn clear(ctx: &Ctx) -> Result<()> {
-    let n = Store::new(&ctx.paths, ctx.tmux.socket()).clear()?;
+    let store_socket = ctx.tmux.store_socket();
+    let n = Store::new(&ctx.paths, store_socket.as_deref()).clear()?;
     if ctx.json {
         print_json(&serde_json::json!({ "cleared": n }))?;
     } else if !ctx.quiet {

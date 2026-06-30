@@ -165,6 +165,18 @@ impl Tmux {
         self.socket.as_deref()
     }
 
+    /// Stable identity for filesystem state tied to the tmux server this wrapper will target.
+    /// With no explicit `-L`, tmux honors `$TMUX` when called inside a tmux session, so that
+    /// socket path must not share transcript storage with the real default server.
+    pub fn store_socket(&self) -> Option<String> {
+        if let Some(socket) = &self.socket {
+            return Some(format!("name:{socket}"));
+        }
+        std::env::var("TMUX")
+            .ok()
+            .and_then(|value| tmux_env_socket(&value).map(|socket| format!("path:{socket}")))
+    }
+
     /// `-L <socket>` fragment for printing copy-pasteable attach hints; empty for default.
     pub fn socket_flag(&self) -> String {
         match &self.socket {
@@ -186,4 +198,31 @@ pub fn exact(name: &str) -> String {
 /// the session exists — so operations on a known-existing session use this form.
 pub fn tgt(name: &str) -> String {
     name.trim().trim_start_matches('=').to_string()
+}
+
+fn tmux_env_socket(value: &str) -> Option<&str> {
+    value
+        .split(',')
+        .next()
+        .map(str::trim)
+        .filter(|socket| !socket.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tmux_env_socket;
+
+    #[test]
+    fn tmux_env_socket_parses_socket_path() {
+        assert_eq!(
+            tmux_env_socket("/tmp/tmux-501/default,123,0"),
+            Some("/tmp/tmux-501/default")
+        );
+    }
+
+    #[test]
+    fn tmux_env_socket_rejects_empty_value() {
+        assert_eq!(tmux_env_socket(""), None);
+        assert_eq!(tmux_env_socket(",123,0"), None);
+    }
 }
