@@ -205,7 +205,7 @@ See [`docs/sf-auto-mux.md`](docs/sf-auto-mux.md) for an annotated before/after.
 - **Tags as user-options.** `@tpp`, `@tpp_scope`, `@tpp_dir`, `@tpp_cmd`, `@tpp_created` live on
   the session and are read back in one `list-sessions -F` call. `ls` shows every `@tpp` session.
 - **remain-on-exit** keeps a finished command's last screen so `cat`/`tail` still work; `exit`
-  / `rm --record` snapshot it to `~/.local/state/tpp/exited/<name>.{json,log}` before killing.
+  / `rm --record` snapshot it under `~/.local/state/tpp/exited/<socket>/` before killing.
 
 ## Related tools
 

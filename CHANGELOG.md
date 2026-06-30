@@ -24,6 +24,6 @@ agents.
 - **tmux-compat verbs** (`has-session`, `new-session`, `attach-session`, `kill-session`,
   `list-sessions`, `set-buffer`, `paste-buffer`, `send-keys`, `capture-pane`, `x`) so `tpp` is a
   drop-in for `rmux` in `sf-auto-mux` after `s/rmux/tpp/`.
-- **Config** at `~/.config/tpp/config.toml`; recorded transcripts under
+- **Config** at `~/.config/tpp/config.toml`; socket-scoped recorded transcripts under
   `~/.local/state/tpp/`. `init`, `config`, `doctor`, `completions`.
 - `remain-on-exit` on tpp sessions so finished commands keep their output for `cat`/`tail`.

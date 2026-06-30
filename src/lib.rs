@@ -35,7 +35,7 @@ pub fn run() -> Result<()> {
     let scope = scope::resolve(cfg.scope.mode, cli.scope.as_deref())?;
 
     // Forget stale exited records (best-effort; never fails a command).
-    let _ = Store::new(&paths).prune(cfg.exit.prune_hours);
+    let _ = Store::new(&paths, tmux.socket()).prune(cfg.exit.prune_hours);
 
     let ctx = Ctx {
         tmux,

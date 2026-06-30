@@ -138,7 +138,7 @@ pub fn cat(ctx: &Ctx, args: CatArgs) -> Result<()> {
         args.sessions.clone()
     };
     let lines = args.lines.unwrap_or(ctx.cfg.capture.lines);
-    let store = Store::new(&ctx.paths);
+    let store = Store::new(&ctx.paths, ctx.tmux.socket());
     let multi = targets.len() > 1;
     let mut json_items = Vec::new();
 
@@ -427,7 +427,7 @@ pub fn record_session(ctx: &Ctx, name: &str) -> Result<()> {
         command: info.as_ref().map(|i| i.command.clone()).unwrap_or_default(),
         exited_at: session::now_epoch(),
     };
-    Store::new(&ctx.paths).record(&rec, &output)
+    Store::new(&ctx.paths, ctx.tmux.socket()).record(&rec, &output)
 }
 
 #[cfg(test)]

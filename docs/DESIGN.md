@@ -36,8 +36,9 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
 - **remain-on-exit** is set on every `tpp` session so a finished command leaves its output
   on screen (so `cat`/`tail` still work) instead of vanishing.
 - **Exited records.** `tpp exit` / `tpp rm --record` capture the final scrollback to
-  `~/.local/state/tpp/exited/<name>.{json,log}` before killing, so `cat` can replay a dead
-  session and `clear` purges the records. Auto-pruned after `[exit] prune_hours`.
+  `~/.local/state/tpp/exited/<socket>/` before killing, so `cat` can replay a dead session
+  without crossing tmux sockets and `clear` purges the records. Auto-pruned after
+  `[exit] prune_hours`.
 
 ## Command surface
 
