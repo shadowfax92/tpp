@@ -69,6 +69,10 @@ fn rewrite_new_session_args(
         } else if args[i] == "-c" || args[i].starts_with("-c") {
             meta.dir = short_flag_value_at(&args, i, "-c");
             i = skip_short_flag_value(&args, i, "-c");
+        } else if args[i] == "-t" || args[i].starts_with("-t") {
+            i = rewrite_short_flag_value(&mut args, i, "-t", |target| {
+                session::prefixed_target(cfg, target)
+            });
         } else if new_session_option_takes_value(&args[i]) {
             i += 2;
         } else {
@@ -391,5 +395,16 @@ mod tests {
         assert_eq!(meta.name.as_deref(), Some("tpp/api"));
         assert_eq!(meta.dir.as_deref(), None);
         assert_eq!(meta.command.as_deref(), Some("sh"));
+    }
+
+    #[test]
+    fn rewrite_new_session_args_prefixes_target_group() {
+        let (rewritten, meta) = rewrite_new_session_args(
+            &Config::default(),
+            args(&["-d", "-s", "child", "-t", "api"]),
+        );
+
+        assert_eq!(rewritten, args(&["-d", "-s", "tpp/child", "-t", "tpp/api"]));
+        assert_eq!(meta.name.as_deref(), Some("tpp/child"));
     }
 }
