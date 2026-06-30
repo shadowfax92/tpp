@@ -178,13 +178,16 @@ fn humanize_age(secs: i64) -> String {
     }
 }
 
+fn ls_scope_filter<'a>(
+    _args: &LsArgs,
+    _default: LsDefault,
+    _current_scope: Option<&'a str>,
+) -> Option<&'a str> {
+    None
+}
+
 pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
-    let effective_all = args.all || matches!(ctx.cfg.ls.default, LsDefault::All);
-    let scope_filter = if effective_all {
-        None
-    } else {
-        ctx.scope.as_deref()
-    };
+    let scope_filter = ls_scope_filter(&args, ctx.cfg.ls.default, ctx.scope.as_deref());
 
     let live = session::list(&ctx.tmux, scope_filter)?;
     let now = now_epoch();
@@ -424,7 +427,9 @@ pub fn rename(ctx: &Ctx, args: RenameArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{humanize_age, slug};
+    use super::{humanize_age, ls_scope_filter, slug};
+    use crate::cli::LsArgs;
+    use crate::config::LsDefault;
 
     #[test]
     fn slug_sanitizes() {
@@ -440,5 +445,30 @@ mod tests {
         assert_eq!(humanize_age(120), "2m");
         assert_eq!(humanize_age(7200), "2h");
         assert_eq!(humanize_age(172_800), "2d");
+    }
+
+    #[test]
+    fn ls_scope_filter_is_universal() {
+        let scope = Some("/tmp/worktree");
+
+        assert_eq!(
+            ls_scope_filter(&LsArgs::default(), LsDefault::Scope, scope),
+            None
+        );
+        assert_eq!(
+            ls_scope_filter(&LsArgs::default(), LsDefault::All, scope),
+            None
+        );
+        assert_eq!(
+            ls_scope_filter(
+                &LsArgs {
+                    all: true,
+                    ..LsArgs::default()
+                },
+                LsDefault::Scope,
+                scope,
+            ),
+            None
+        );
     }
 }
