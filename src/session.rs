@@ -56,6 +56,47 @@ pub fn exists(tmux: &Tmux, name: &str) -> bool {
     tmux.ok(["has-session", "-t", &exact(name)])
 }
 
+/// Apply the configured tpp session prefix to a session name, unless already present.
+pub fn prefixed_name(cfg: &Config, name: &str) -> String {
+    let name = tgt(name);
+    let prefix = cfg.session_prefix.as_str();
+    if prefix.is_empty() || name.starts_with(prefix) {
+        name
+    } else {
+        format!("{prefix}{name}")
+    }
+}
+
+/// Apply the configured prefix to the session component of a tmux target.
+pub fn prefixed_target(cfg: &Config, target: &str) -> String {
+    let target = target.trim();
+    let exact = target.starts_with('=');
+    let raw = target.trim_start_matches('=');
+    let split_at = raw.find([':', '.']).unwrap_or(raw.len());
+    let (session, suffix) = raw.split_at(split_at);
+    if session.is_empty() {
+        return target.to_string();
+    }
+
+    let marker = if exact { "=" } else { "" };
+    format!("{marker}{}{}", prefixed_name(cfg, session), suffix)
+}
+
+/// Resolve a user-supplied logical name to an existing prefixed session when possible.
+pub fn resolve_existing_name(tmux: &Tmux, cfg: &Config, name: &str) -> String {
+    let prefixed = prefixed_name(cfg, name);
+    if exists(tmux, &prefixed) {
+        return prefixed;
+    }
+
+    let raw = tgt(name);
+    if raw != prefixed && exists(tmux, &raw) {
+        raw
+    } else {
+        prefixed
+    }
+}
+
 /// List tpp-managed sessions. When `scope` is `Some`, only sessions stamped with that scope
 /// are returned; `None` returns every tpp session. Non-tpp tmux sessions are always excluded.
 pub fn list(tmux: &Tmux, scope: Option<&str>) -> Result<Vec<SessionInfo>> {
@@ -199,4 +240,45 @@ pub fn create(tmux: &Tmux, cfg: &Config, opts: NewOpts) -> Result<String> {
 
 fn set_opt(tmux: &Tmux, target: &str, key: &str, value: &str) {
     let _ = tmux.run(["set-option", "-t", target, key, value]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{prefixed_name, prefixed_target};
+    use crate::config::Config;
+
+    fn cfg(prefix: &str) -> Config {
+        Config {
+            session_prefix: prefix.to_string(),
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn prefixed_name_adds_default_prefix() {
+        assert_eq!(prefixed_name(&Config::default(), "api"), "tpp/api");
+    }
+
+    #[test]
+    fn prefixed_name_does_not_double_prefix() {
+        assert_eq!(prefixed_name(&Config::default(), "tpp/api"), "tpp/api");
+    }
+
+    #[test]
+    fn prefixed_name_allows_empty_prefix() {
+        assert_eq!(prefixed_name(&cfg(""), "api"), "api");
+    }
+
+    #[test]
+    fn prefixed_target_preserves_window_and_pane_suffix() {
+        assert_eq!(
+            prefixed_target(&Config::default(), "api:1.2"),
+            "tpp/api:1.2"
+        );
+    }
+
+    #[test]
+    fn prefixed_target_keeps_exact_marker() {
+        assert_eq!(prefixed_target(&Config::default(), "=api"), "=tpp/api");
+    }
 }

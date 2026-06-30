@@ -44,8 +44,9 @@ fn slug(s: &str) -> String {
 
 /// Pick an unused session name from a base, appending -2, -3, … on collision.
 fn unique_name(ctx: &Ctx, base: &str) -> String {
-    if !session::exists(&ctx.tmux, base) {
-        return base.to_string();
+    let base = session::prefixed_name(&ctx.cfg, base);
+    if !session::exists(&ctx.tmux, &base) {
+        return base;
     }
     for n in 2.. {
         let candidate = format!("{base}-{n}");
@@ -73,10 +74,11 @@ pub fn run(ctx: &Ctx, args: RunArgs) -> Result<()> {
     let dir = args.dir.clone().or_else(cwd_string);
     let name = match &args.name {
         Some(n) => {
-            if session::exists(&ctx.tmux, n) {
+            let name = session::prefixed_name(&ctx.cfg, n);
+            if session::exists(&ctx.tmux, &name) {
                 die(1, format!("session already exists: {n}"));
             }
-            n.clone()
+            name
         }
         None => auto_name_for_command(ctx, &args.command),
     };
@@ -116,7 +118,7 @@ pub fn run(ctx: &Ctx, args: RunArgs) -> Result<()> {
 
 pub fn new(ctx: &Ctx, args: NewArgs) -> Result<()> {
     let name = match &args.name {
-        Some(n) => n.clone(),
+        Some(n) => session::prefixed_name(&ctx.cfg, n),
         None => {
             let base = cwd_string()
                 .as_deref()
@@ -302,7 +304,7 @@ fn fzf_pick(names: &[String]) -> Option<String> {
 
 pub fn attach(ctx: &Ctx, args: AttachArgs) -> Result<()> {
     let name = match &args.session {
-        Some(s) => s.trim().trim_start_matches('=').to_string(),
+        Some(s) => session::resolve_existing_name(&ctx.tmux, &ctx.cfg, s),
         None => {
             let sessions = session::list(&ctx.tmux, ctx.scope.as_deref())?;
             match sessions.len() {
@@ -341,7 +343,10 @@ pub fn rm(ctx: &Ctx, args: RmArgs) -> Result<()> {
             .map(|s| s.name)
             .collect()
     } else {
-        args.sessions.clone()
+        args.sessions
+            .iter()
+            .map(|name| session::resolve_existing_name(&ctx.tmux, &ctx.cfg, name))
+            .collect()
     };
 
     if targets.is_empty() {
@@ -371,12 +376,15 @@ pub fn rm(ctx: &Ctx, args: RmArgs) -> Result<()> {
 }
 
 pub fn exit(ctx: &Ctx, args: ExitArgs) -> Result<()> {
-    let name = match args.session.clone().or_else(|| current_session(&ctx.tmux)) {
-        Some(n) => n,
-        None => die(
-            2,
-            "not inside a tmux session — name the session to exit (tpp exit NAME)",
-        ),
+    let name = match args.session.clone() {
+        Some(n) => session::resolve_existing_name(&ctx.tmux, &ctx.cfg, &n),
+        None => match current_session(&ctx.tmux) {
+            Some(n) => n,
+            None => die(
+                2,
+                "not inside a tmux session — name the session to exit (tpp exit NAME)",
+            ),
+        },
     };
     if !args.no_record && session::exists(&ctx.tmux, &name) {
         let _ = record_session(ctx, &name);
@@ -403,6 +411,7 @@ pub fn has(ctx: &Ctx, args: HasArgs) -> Result<()> {
         Some(n) => n,
         None => die(2, "usage: tpp has <session>"),
     };
+    let name = session::resolve_existing_name(&ctx.tmux, &ctx.cfg, &name);
     std::process::exit(if session::exists(&ctx.tmux, &name) {
         0
     } else {
@@ -411,13 +420,18 @@ pub fn has(ctx: &Ctx, args: HasArgs) -> Result<()> {
 }
 
 pub fn rename(ctx: &Ctx, args: RenameArgs) -> Result<()> {
-    if !session::exists(&ctx.tmux, &args.session) {
-        die(code::NOT_FOUND, format!("no such session: {}", args.session));
+    let name = session::resolve_existing_name(&ctx.tmux, &ctx.cfg, &args.session);
+    if !session::exists(&ctx.tmux, &name) {
+        die(
+            code::NOT_FOUND,
+            format!("no such session: {}", args.session),
+        );
     }
+    let new_name = session::prefixed_name(&ctx.cfg, &args.new_name);
     ctx.tmux
-        .run(["rename-session", "-t", &exact(&args.session), &args.new_name])?;
+        .run(["rename-session", "-t", &exact(&name), &new_name])?;
     if !ctx.quiet {
-        eprintln!("renamed {} -> {}", args.session, args.new_name);
+        eprintln!("renamed {name} -> {new_name}");
     }
     Ok(())
 }
