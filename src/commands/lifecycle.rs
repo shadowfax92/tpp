@@ -251,7 +251,12 @@ pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
     }
 
     let name_w = rows.iter().map(|r| r.name.len()).max().unwrap_or(4).max(4);
-    let status_w = rows.iter().map(|r| r.status.len()).max().unwrap_or(6).max(6);
+    let status_w = rows
+        .iter()
+        .map(|r| r.status.len())
+        .max()
+        .unwrap_or(6)
+        .max(6);
     for r in &rows {
         let status = match r.status.as_str() {
             "running" => paint(&r.status, Style::Green),
@@ -411,13 +416,19 @@ pub fn has(ctx: &Ctx, args: HasArgs) -> Result<()> {
 }
 
 pub fn rename(ctx: &Ctx, args: RenameArgs) -> Result<()> {
-    if !session::exists(&ctx.tmux, &args.session) {
-        die(code::NOT_FOUND, format!("no such session: {}", args.session));
+    let (session_name, new_name) = match args.names.as_slice() {
+        [session_name, new_name] => (session_name.clone(), new_name.clone()),
+        [_new_name] => die(2, "name a session to rename"),
+        _ => die(2, "usage: tpp rename [SESSION] <NEW_NAME>"),
+    };
+
+    if !session::exists(&ctx.tmux, &session_name) {
+        die(code::NOT_FOUND, format!("no such session: {session_name}"));
     }
     ctx.tmux
-        .run(["rename-session", "-t", &exact(&args.session), &args.new_name])?;
+        .run(["rename-session", "-t", &exact(&session_name), &new_name])?;
     if !ctx.quiet {
-        eprintln!("renamed {} -> {}", args.session, args.new_name);
+        eprintln!("renamed {session_name} -> {new_name}");
     }
     Ok(())
 }

@@ -152,7 +152,11 @@ pub struct RunArgs {
     #[arg(long)]
     pub record: bool,
     /// The command to run (everything after `--`).
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "CMD")]
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        value_name = "CMD"
+    )]
     pub command: Vec<String>,
 }
 
@@ -171,7 +175,11 @@ pub struct NewArgs {
     #[arg(short = 'd', long, hide = true)]
     pub detached: bool,
     /// Command to run (defaults to your shell).
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "CMD")]
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        value_name = "CMD"
+    )]
     pub command: Vec<String>,
 }
 
@@ -215,7 +223,11 @@ pub struct SendArgs {
     #[arg(short = 'e', long)]
     pub enter: bool,
     /// Text to send (literal unless --keys).
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "TEXT")]
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        value_name = "TEXT"
+    )]
     pub text: Vec<String>,
 }
 
@@ -234,7 +246,11 @@ pub struct PasteArgs {
     #[arg(long)]
     pub no_enter: bool,
     /// Text to paste.
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "TEXT")]
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        value_name = "TEXT"
+    )]
     pub text: Vec<String>,
 }
 
@@ -324,10 +340,9 @@ pub struct HasArgs {
 
 #[derive(Args, Debug)]
 pub struct RenameArgs {
-    /// Session to rename.
-    pub session: String,
-    /// New name.
-    pub new_name: String,
+    /// With one arg: new name, and pick the session. With two: SESSION NEW_NAME.
+    #[arg(value_name = "SESSION_OR_NEW_NAME", num_args = 1..=2)]
+    pub names: Vec<String>,
 }
 
 #[derive(Args, Debug)]
@@ -372,6 +387,10 @@ pub struct CompletionsArgs {
 /// Catch-all positional bucket for hidden tmux-compat verbs — forwarded to tmux verbatim.
 #[derive(Args, Debug)]
 pub struct RawArgs {
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "ARGS")]
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        value_name = "ARGS"
+    )]
     pub args: Vec<String>,
 }
