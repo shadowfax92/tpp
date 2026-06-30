@@ -33,6 +33,15 @@ pub fn die(code: i32, msg: impl AsRef<str>) -> ! {
     std::process::exit(code);
 }
 
+pub fn no_such_session_message(name: &str) -> String {
+    format!("No such session {name}")
+}
+
+/// Exit through the shared high-level missing-session error path.
+pub fn no_such_session(name: &str) -> ! {
+    die(code::NOT_FOUND, no_such_session_message(name))
+}
+
 /// Resolve the session a single-target command should act on.
 pub fn resolve_one_target(ctx: &Ctx, explicit: Option<&str>) -> String {
     if let Some(name) = explicit {

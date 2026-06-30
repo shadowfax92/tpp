@@ -7,7 +7,9 @@ use serde::Serialize;
 
 use crate::cli::{AttachArgs, ExitArgs, HasArgs, LsArgs, NewArgs, RenameArgs, RmArgs, RunArgs};
 use crate::commands::io::{record_session, run_wait};
-use crate::commands::{code, current_session, die, select, Ctx};
+use crate::commands::{
+    code, current_session, die, no_such_session, no_such_session_message, select, Ctx,
+};
 use crate::output::{paint, print_json, Style};
 use crate::session::{self, now_epoch, NewOpts};
 use crate::store::Store;
@@ -262,7 +264,7 @@ pub fn attach(ctx: &Ctx, args: AttachArgs) -> Result<()> {
     let name = select::one(ctx, args.session.as_deref(), "attach to")?;
 
     if !session::exists(&ctx.tmux, &name) {
-        die(code::NOT_FOUND, format!("no such session: {name}"));
+        no_such_session(&name);
     }
 
     // Inside tmux we can't nest an attach — switch the current client instead.
@@ -288,11 +290,11 @@ pub fn rm(ctx: &Ctx, args: RmArgs) -> Result<()> {
     }
 
     let mut removed = 0;
+    let mut missing = false;
     for name in &targets {
         if !session::exists(&ctx.tmux, name) {
-            if !ctx.quiet {
-                eprintln!("tpp: no such session: {name}");
-            }
+            eprintln!("tpp: {}", no_such_session_message(name));
+            missing = true;
             continue;
         }
         if args.record {
@@ -306,6 +308,9 @@ pub fn rm(ctx: &Ctx, args: RmArgs) -> Result<()> {
     if !ctx.quiet {
         eprintln!("removed {removed} session(s)");
     }
+    if missing {
+        std::process::exit(code::NOT_FOUND);
+    }
     Ok(())
 }
 
@@ -317,7 +322,10 @@ pub fn exit(ctx: &Ctx, args: ExitArgs) -> Result<()> {
     } else {
         select::one(ctx, None, "exit")?
     };
-    if !args.no_record && session::exists(&ctx.tmux, &name) {
+    if !session::exists(&ctx.tmux, &name) {
+        no_such_session(&name);
+    }
+    if !args.no_record {
         let _ = record_session(ctx, &name);
     }
     let _ = ctx.tmux.run(["kill-session", "-t", &exact(&name)]);
@@ -365,7 +373,7 @@ pub fn rename(ctx: &Ctx, args: RenameArgs) -> Result<()> {
     };
 
     if !session::exists(&ctx.tmux, &session_name) {
-        die(code::NOT_FOUND, format!("no such session: {session_name}"));
+        no_such_session(&session_name);
     }
     ctx.tmux
         .run(["rename-session", "-t", &exact(&session_name), &new_name])?;
