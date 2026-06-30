@@ -9,8 +9,7 @@ use serde::Serialize;
 
 use crate::cli::{CatArgs, PasteArgs, SendArgs, TailArgs, WaitArgs};
 use crate::commands::{
-    capture, code, die, last_lines, pane_dead, pane_dead_status, resolve_one_target,
-    trim_trailing_blank, Ctx,
+    capture, code, die, last_lines, pane_dead, pane_dead_status, select, trim_trailing_blank, Ctx,
 };
 use crate::output::{paint, print_json, Style};
 use crate::session;
@@ -76,7 +75,7 @@ fn deliver(
 }
 
 pub fn send(ctx: &Ctx, args: SendArgs) -> Result<()> {
-    let target = resolve_one_target(ctx, args.target.as_deref());
+    let target = select::one(ctx, args.target.as_deref(), "send to")?;
     if !session::exists(&ctx.tmux, &target) {
         die(code::NOT_FOUND, format!("no such session: {target}"));
     }
@@ -103,7 +102,7 @@ pub fn send(ctx: &Ctx, args: SendArgs) -> Result<()> {
 }
 
 pub fn paste(ctx: &Ctx, args: PasteArgs) -> Result<()> {
-    let target = resolve_one_target(ctx, args.target.as_deref());
+    let target = select::one(ctx, args.target.as_deref(), "paste into")?;
     if !session::exists(&ctx.tmux, &target) {
         die(code::NOT_FOUND, format!("no such session: {target}"));
     }
@@ -132,11 +131,7 @@ struct CatJson {
 }
 
 pub fn cat(ctx: &Ctx, args: CatArgs) -> Result<()> {
-    let targets: Vec<String> = if args.sessions.is_empty() {
-        vec![resolve_one_target(ctx, None)]
-    } else {
-        args.sessions.clone()
-    };
+    let targets = select::many(ctx, &args.sessions, "print")?;
     let lines = args.lines.unwrap_or(ctx.cfg.capture.lines);
     let store_socket = ctx.tmux.store_socket();
     let store = Store::new(&ctx.paths, store_socket.as_deref());
@@ -177,7 +172,10 @@ pub fn cat(ctx: &Ctx, args: CatArgs) -> Result<()> {
             });
         } else {
             if multi {
-                println!("{}", paint(&format!("== {name} [{status}] =="), Style::Cyan));
+                println!(
+                    "{}",
+                    paint(&format!("== {name} [{status}] =="), Style::Cyan)
+                );
             }
             println!("{output}");
         }
@@ -224,11 +222,7 @@ fn appended<'a>(prev: &str, cur: &'a str) -> &'a str {
 /// Follow one or more sessions. Polls a capture window each tick and prints the delta. Stops
 /// when all targets are gone or dead.
 pub fn tail(ctx: &Ctx, args: TailArgs) -> Result<()> {
-    let targets: Vec<String> = if args.sessions.is_empty() {
-        vec![resolve_one_target(ctx, None)]
-    } else {
-        args.sessions.clone()
-    };
+    let targets = select::many(ctx, &args.sessions, "tail")?;
     let interval = Duration::from_millis(args.interval.unwrap_or(ctx.cfg.tail.interval_ms).max(50));
     let window: u32 = 500;
     let multi = targets.len() > 1;
@@ -295,7 +289,7 @@ struct WaitJson {
 /// Block until a condition holds: text appears, output goes idle, or the pane exits. Exits 4
 /// on timeout.
 pub fn wait(ctx: &Ctx, args: WaitArgs) -> Result<()> {
-    let target = resolve_one_target(ctx, args.target.as_deref());
+    let target = select::one(ctx, args.target.as_deref(), "wait on")?;
     if !session::exists(&ctx.tmux, &target) {
         die(code::NOT_FOUND, format!("no such session: {target}"));
     }
@@ -415,9 +409,15 @@ pub fn run_wait(ctx: &Ctx, name: &str) -> Result<i32> {
 /// Record a session's current output as an exited record (used by `exit`/`rm --record`).
 pub fn record_session(ctx: &Ctx, name: &str) -> Result<()> {
     let info = crate::commands::find_session(&ctx.tmux, name);
-    let output = capture(&ctx.tmux, name, Some(ctx.cfg.exit.record_lines), false, false)
-        .map(|s| trim_trailing_blank(&s))
-        .unwrap_or_default();
+    let output = capture(
+        &ctx.tmux,
+        name,
+        Some(ctx.cfg.exit.record_lines),
+        false,
+        false,
+    )
+    .map(|s| trim_trailing_blank(&s))
+    .unwrap_or_default();
     let rec = crate::store::ExitedRecord {
         name: name.to_string(),
         scope: info

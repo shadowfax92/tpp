@@ -4,6 +4,7 @@ pub mod compat;
 pub mod io;
 pub mod lifecycle;
 pub mod meta;
+pub mod select;
 
 use crate::config::Config;
 use crate::paths::Paths;
@@ -119,9 +120,15 @@ pub fn pane_dead(tmux: &Tmux, name: &str) -> bool {
 
 /// Exit status of a dead pane, if tmux reports one.
 pub fn pane_dead_status(tmux: &Tmux, name: &str) -> Option<i32> {
-    tmux.run(["display-message", "-p", "-t", &tgt(name), "#{pane_dead_status}"])
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
+    tmux.run([
+        "display-message",
+        "-p",
+        "-t",
+        &tgt(name),
+        "#{pane_dead_status}",
+    ])
+    .ok()
+    .and_then(|s| s.trim().parse().ok())
 }
 
 /// The session the caller is running inside (requires `$TMUX`), if any.

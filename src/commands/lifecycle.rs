@@ -1,14 +1,13 @@
 //! Session lifecycle: `run`, `new`, `ls`, `attach`, `rm`, `exit`, `clear`, `has`, `rename`.
 
 use std::path::Path;
-use std::process::{Command, Stdio};
 
 use anyhow::Result;
 use serde::Serialize;
 
 use crate::cli::{AttachArgs, ExitArgs, HasArgs, LsArgs, NewArgs, RenameArgs, RmArgs, RunArgs};
 use crate::commands::io::{record_session, run_wait};
-use crate::commands::{code, current_session, die, Ctx};
+use crate::commands::{code, current_session, die, select, Ctx};
 use crate::config::LsDefault;
 use crate::output::{paint, print_json, Style};
 use crate::session::{self, now_epoch, NewOpts};
@@ -255,7 +254,12 @@ pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
     }
 
     let name_w = rows.iter().map(|r| r.name.len()).max().unwrap_or(4).max(4);
-    let status_w = rows.iter().map(|r| r.status.len()).max().unwrap_or(6).max(6);
+    let status_w = rows
+        .iter()
+        .map(|r| r.status.len())
+        .max()
+        .unwrap_or(6)
+        .max(6);
     for r in &rows {
         let status = match r.status.as_str() {
             "running" => paint(&r.status, Style::Green),
@@ -278,53 +282,8 @@ pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
     Ok(())
 }
 
-fn fzf_pick(names: &[String]) -> Option<String> {
-    if Command::new("fzf").arg("--version").output().is_err() {
-        return None;
-    }
-    use std::io::Write;
-    let mut child = Command::new("fzf")
-        .args(["--prompt", "tpp> ", "--height", "40%", "--reverse"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .ok()?;
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(names.join("\n").as_bytes());
-    }
-    let out = child.wait_with_output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let pick = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if pick.is_empty() {
-        None
-    } else {
-        Some(pick)
-    }
-}
-
 pub fn attach(ctx: &Ctx, args: AttachArgs) -> Result<()> {
-    let name = match &args.session {
-        Some(s) => s.trim().trim_start_matches('=').to_string(),
-        None => {
-            let sessions = session::list(&ctx.tmux, ctx.scope.as_deref())?;
-            match sessions.len() {
-                0 => die(code::NOT_FOUND, "no sessions in scope to attach to"),
-                1 => sessions[0].name.clone(),
-                _ => {
-                    let names: Vec<String> = sessions.iter().map(|s| s.name.clone()).collect();
-                    match fzf_pick(&names) {
-                        Some(p) => p,
-                        None => die(
-                            code::NOT_FOUND,
-                            format!("name a session to attach: {}", names.join(", ")),
-                        ),
-                    }
-                }
-            }
-        }
-    };
+    let name = select::one(ctx, args.session.as_deref(), "attach to")?;
 
     if !session::exists(&ctx.tmux, &name) {
         die(code::NOT_FOUND, format!("no such session: {name}"));
@@ -345,7 +304,7 @@ pub fn rm(ctx: &Ctx, args: RmArgs) -> Result<()> {
             .map(|s| s.name)
             .collect()
     } else {
-        args.sessions.clone()
+        select::many(ctx, &args.sessions, "remove")?
     };
 
     if targets.is_empty() {
@@ -375,12 +334,12 @@ pub fn rm(ctx: &Ctx, args: RmArgs) -> Result<()> {
 }
 
 pub fn exit(ctx: &Ctx, args: ExitArgs) -> Result<()> {
-    let name = match args.session.clone().or_else(|| current_session(&ctx.tmux)) {
-        Some(n) => n,
-        None => die(
-            2,
-            "not inside a tmux session — name the session to exit (tpp exit NAME)",
-        ),
+    let name = if let Some(name) = args.session.as_deref() {
+        select::one(ctx, Some(name), "exit")?
+    } else if let Some(name) = current_session(&ctx.tmux) {
+        name
+    } else {
+        select::one(ctx, None, "exit")?
     };
     if !args.no_record && session::exists(&ctx.tmux, &name) {
         let _ = record_session(ctx, &name);
@@ -416,13 +375,19 @@ pub fn has(ctx: &Ctx, args: HasArgs) -> Result<()> {
 }
 
 pub fn rename(ctx: &Ctx, args: RenameArgs) -> Result<()> {
-    if !session::exists(&ctx.tmux, &args.session) {
-        die(code::NOT_FOUND, format!("no such session: {}", args.session));
+    let (session_name, new_name) = match args.names.as_slice() {
+        [session_name, new_name] => (select::normalize_explicit(session_name), new_name.clone()),
+        [new_name] => (select::one(ctx, None, "rename")?, new_name.clone()),
+        _ => die(2, "usage: tpp rename [SESSION] <NEW_NAME>"),
+    };
+
+    if !session::exists(&ctx.tmux, &session_name) {
+        die(code::NOT_FOUND, format!("no such session: {session_name}"));
     }
     ctx.tmux
-        .run(["rename-session", "-t", &exact(&args.session), &args.new_name])?;
+        .run(["rename-session", "-t", &exact(&session_name), &new_name])?;
     if !ctx.quiet {
-        eprintln!("renamed {} -> {}", args.session, args.new_name);
+        eprintln!("renamed {session_name} -> {new_name}");
     }
     Ok(())
 }

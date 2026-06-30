@@ -3,9 +3,14 @@
 
 use clap::Parser;
 use tpp::cli::{Cli, Cmd};
+use tpp::commands::select::{normalize_explicit, parse_fzf_output};
 
 fn parse(args: &[&str]) -> Cli {
     Cli::parse_from(std::iter::once("tpp").chain(args.iter().copied()))
+}
+
+fn try_parse(args: &[&str]) -> Result<Cli, clap::Error> {
+    Cli::try_parse_from(std::iter::once("tpp").chain(args.iter().copied()))
 }
 
 #[test]
@@ -68,4 +73,32 @@ fn compat_paste_buffer_forwards_flags() {
 fn global_socket_flag_parses_before_subcommand() {
     let cli = parse(&["-L", "mysock", "ls"]);
     assert_eq!(cli.socket.as_deref(), Some("mysock"));
+}
+
+#[test]
+fn rename_accepts_new_name_without_session() {
+    match try_parse(&["rename", "api2"])
+        .expect("rename with picker target")
+        .cmd
+    {
+        Some(Cmd::Rename(a)) => assert_eq!(a.names, vec!["api2"]),
+        other => panic!("expected Rename, got {other:?}"),
+    }
+}
+
+#[test]
+fn rename_keeps_explicit_old_and_new_names() {
+    match parse(&["rename", "api", "api2"]).cmd {
+        Some(Cmd::Rename(a)) => assert_eq!(a.names, vec!["api", "api2"]),
+        other => panic!("expected Rename, got {other:?}"),
+    }
+}
+
+#[test]
+fn selector_helpers_normalize_targets_and_fzf_output() {
+    assert_eq!(normalize_explicit("=api"), "api");
+    assert_eq!(
+        parse_fzf_output("api\n worker \n\n"),
+        vec!["api".to_string(), "worker".to_string()]
+    );
 }
