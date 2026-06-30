@@ -5,6 +5,7 @@
 //! are matched exactly with a leading `=` so `foo` never accidentally matches `foobar`.
 
 use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, Result};
@@ -165,6 +166,28 @@ impl Tmux {
         self.socket.as_deref()
     }
 
+    /// Stable identity for filesystem state tied to the tmux server this wrapper will target.
+    /// With no explicit `-L`, tmux honors `$TMUX` when called inside a tmux session, so that
+    /// socket path must not share transcript storage with the real default server.
+    pub fn store_socket(&self) -> Option<String> {
+        if let Some(socket) = &self.socket {
+            if let Some(path) = self.socket_path() {
+                return socket_store_key(&path);
+            }
+            return named_socket_store_key(socket);
+        }
+        std::env::var("TMUX")
+            .ok()
+            .and_then(|value| tmux_env_socket(&value).and_then(socket_store_key))
+    }
+
+    fn socket_path(&self) -> Option<String> {
+        self.run(["display-message", "-p", "#{socket_path}"])
+            .ok()
+            .map(|path| path.trim().to_string())
+            .filter(|path| !path.is_empty())
+    }
+
     /// `-L <socket>` fragment for printing copy-pasteable attach hints; empty for default.
     pub fn socket_flag(&self) -> String {
         match &self.socket {
@@ -186,4 +209,107 @@ pub fn exact(name: &str) -> String {
 /// the session exists — so operations on a known-existing session use this form.
 pub fn tgt(name: &str) -> String {
     name.trim().trim_start_matches('=').to_string()
+}
+
+fn tmux_env_socket(value: &str) -> Option<&str> {
+    value
+        .split(',')
+        .next()
+        .map(str::trim)
+        .filter(|socket| !socket.is_empty())
+}
+
+fn named_socket_store_key(name: &str) -> Option<String> {
+    tmux_named_socket_path(name).and_then(|path| socket_store_key(path.to_str()?))
+}
+
+fn socket_store_key(path: &str) -> Option<String> {
+    let normalized = normalize_socket_path(Path::new(path));
+    if tmux_named_socket_path("default")
+        .map(|default_path| normalize_socket_path(&default_path) == normalized)
+        .unwrap_or(false)
+    {
+        None
+    } else {
+        Some(format!("path:{normalized}"))
+    }
+}
+
+fn tmux_named_socket_path(name: &str) -> Option<PathBuf> {
+    let name = name.trim();
+    if name.is_empty() || name.contains('/') {
+        return None;
+    }
+    Some(tmux_socket_dir()?.join(name))
+}
+
+fn tmux_socket_dir() -> Option<PathBuf> {
+    let base = std::env::var_os("TMUX_TMPDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    let uid = current_uid()?;
+    Some(base.join(format!("tmux-{uid}")))
+}
+
+fn current_uid() -> Option<String> {
+    if let Ok(uid) = std::env::var("UID") {
+        if !uid.is_empty() && uid.chars().all(|c| c.is_ascii_digit()) {
+            return Some(uid);
+        }
+    }
+    let out = Command::new("id").arg("-u").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let uid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!uid.is_empty() && uid.chars().all(|c| c.is_ascii_digit())).then_some(uid)
+}
+
+fn normalize_socket_path(path: &Path) -> String {
+    if let Ok(path) = std::fs::canonicalize(path) {
+        return path.to_string_lossy().into_owned();
+    }
+    if let (Some(parent), Some(file_name)) = (path.parent(), path.file_name()) {
+        if let Ok(parent) = std::fs::canonicalize(parent) {
+            return parent.join(file_name).to_string_lossy().into_owned();
+        }
+    }
+    path.to_string_lossy().into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{named_socket_store_key, socket_store_key, tmux_env_socket, tmux_named_socket_path};
+
+    #[test]
+    fn tmux_env_socket_parses_socket_path() {
+        assert_eq!(
+            tmux_env_socket("/tmp/tmux-501/default,123,0"),
+            Some("/tmp/tmux-501/default")
+        );
+    }
+
+    #[test]
+    fn tmux_env_socket_rejects_empty_value() {
+        assert_eq!(tmux_env_socket(""), None);
+        assert_eq!(tmux_env_socket(",123,0"), None);
+    }
+
+    #[test]
+    fn explicit_and_inherited_named_socket_keys_match() {
+        let path = tmux_named_socket_path("agents").expect("current uid");
+
+        assert_eq!(
+            named_socket_store_key("agents"),
+            socket_store_key(&path.to_string_lossy()),
+        );
+    }
+
+    #[test]
+    fn standard_default_socket_uses_legacy_default_namespace() {
+        let path = tmux_named_socket_path("default").expect("current uid");
+
+        assert_eq!(named_socket_store_key("default"), None);
+        assert_eq!(socket_store_key(&path.to_string_lossy()), None);
+    }
 }

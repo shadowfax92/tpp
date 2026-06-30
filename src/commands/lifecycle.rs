@@ -178,13 +178,16 @@ fn humanize_age(secs: i64) -> String {
     }
 }
 
+fn ls_scope_filter<'a>(
+    _args: &LsArgs,
+    _default: LsDefault,
+    _current_scope: Option<&'a str>,
+) -> Option<&'a str> {
+    None
+}
+
 pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
-    let effective_all = args.all || matches!(ctx.cfg.ls.default, LsDefault::All);
-    let scope_filter = if effective_all {
-        None
-    } else {
-        ctx.scope.as_deref()
-    };
+    let scope_filter = ls_scope_filter(&args, ctx.cfg.ls.default, ctx.scope.as_deref());
 
     let live = session::list(&ctx.tmux, scope_filter)?;
     let now = now_epoch();
@@ -203,7 +206,8 @@ pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
 
     let show_exited = args.exited || (!args.no_exited && ctx.cfg.ls.show_exited_hours > 0);
     if show_exited {
-        let store = Store::new(&ctx.paths);
+        let store_socket = ctx.tmux.store_socket();
+        let store = Store::new(&ctx.paths, store_socket.as_deref());
         let hours = if args.exited && ctx.cfg.ls.show_exited_hours == 0 {
             24
         } else {
@@ -389,7 +393,8 @@ pub fn exit(ctx: &Ctx, args: ExitArgs) -> Result<()> {
 }
 
 pub fn clear(ctx: &Ctx) -> Result<()> {
-    let n = Store::new(&ctx.paths).clear()?;
+    let store_socket = ctx.tmux.store_socket();
+    let n = Store::new(&ctx.paths, store_socket.as_deref()).clear()?;
     if ctx.json {
         print_json(&serde_json::json!({ "cleared": n }))?;
     } else if !ctx.quiet {
@@ -424,7 +429,9 @@ pub fn rename(ctx: &Ctx, args: RenameArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{humanize_age, slug};
+    use super::{humanize_age, ls_scope_filter, slug};
+    use crate::cli::LsArgs;
+    use crate::config::LsDefault;
 
     #[test]
     fn slug_sanitizes() {
@@ -440,5 +447,30 @@ mod tests {
         assert_eq!(humanize_age(120), "2m");
         assert_eq!(humanize_age(7200), "2h");
         assert_eq!(humanize_age(172_800), "2d");
+    }
+
+    #[test]
+    fn ls_scope_filter_is_universal() {
+        let scope = Some("/tmp/worktree");
+
+        assert_eq!(
+            ls_scope_filter(&LsArgs::default(), LsDefault::Scope, scope),
+            None
+        );
+        assert_eq!(
+            ls_scope_filter(&LsArgs::default(), LsDefault::All, scope),
+            None
+        );
+        assert_eq!(
+            ls_scope_filter(
+                &LsArgs {
+                    all: true,
+                    ..LsArgs::default()
+                },
+                LsDefault::Scope,
+                scope,
+            ),
+            None
+        );
     }
 }

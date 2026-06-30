@@ -15,15 +15,15 @@ agents.
   recorded exited sessions.
 - **Input:** `send` (`s`) and `paste` — literal text, `--file`/`--stdin`, `--keys`, and
   bracketed paste for verbatim multi-line content; `--enter` to submit.
-- **Directory scope:** sessions are tagged (tmux session user-options) with the directory they
-  were created in (git root by default); `ls` filters by scope so sessions are "shared in a
-  directory". `[scope] mode = git|cwd|none`, `--scope`.
+- **Universal listing with scope tags:** sessions are tagged (tmux session user-options) with
+  the directory they were created in (git root by default); `ls` shows all `tpp` sessions while
+  omitted-target commands can still use scope. `[scope] mode = git|cwd|none`, `--scope`.
 - **Agent ergonomics:** `run` prints only the session name; stable exit codes (`3` not found,
   `4` timeout); `run --wait` streams to completion and exits with the command's status; `wait`
   on text / idle / pane-exit.
 - **tmux-compat verbs** (`has-session`, `new-session`, `attach-session`, `kill-session`,
   `list-sessions`, `set-buffer`, `paste-buffer`, `send-keys`, `capture-pane`, `x`) so `tpp` is a
   drop-in for `rmux` in `sf-auto-mux` after `s/rmux/tpp/`.
-- **Config** at `~/.config/tpp/config.toml`; recorded transcripts under
+- **Config** at `~/.config/tpp/config.toml`; socket-scoped recorded transcripts under
   `~/.local/state/tpp/`. `init`, `config`, `doctor`, `completions`.
 - `remain-on-exit` on tpp sessions so finished commands keep their output for `cat`/`tail`.
