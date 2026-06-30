@@ -215,7 +215,6 @@ pub fn new_session(ctx: &Ctx, raw: RawArgs) -> Result<()> {
             let _ = ctx.tmux.run(["set-option", "-t", &target, k, v]);
         };
         set("@tpp", "1");
-        set("@tpp_scope", ctx.scope.as_deref().unwrap_or(""));
         set("@tpp_dir", meta.dir.as_deref().unwrap_or(""));
         set("@tpp_cmd", &command_label(meta.command.as_deref()));
         set("@tpp_created", &now_epoch().to_string());

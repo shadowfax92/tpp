@@ -121,7 +121,7 @@ pub fn doctor(ctx: &Ctx) -> Result<()> {
         .map(|o| o.status.success())
         .unwrap_or(false);
     println!(
-        "  fzf:         {}  (optional; powers the attach picker)",
+        "  fzf:         {}  (optional; powers session pickers)",
         if fzf {
             paint("ok", Style::Green)
         } else {
@@ -133,11 +133,6 @@ pub fn doctor(ctx: &Ctx) -> Result<()> {
         "  socket:      {}",
         ctx.tmux.socket().unwrap_or("(default tmux server)")
     );
-    println!(
-        "  scope:       {}",
-        ctx.scope.as_deref().unwrap_or("(none — unscoped)")
-    );
-
     let cfg_exists = ctx.config_path.exists();
     println!(
         "  config:      {}  {}",
@@ -150,13 +145,8 @@ pub fn doctor(ctx: &Ctx) -> Result<()> {
     );
     println!("  state:       {}", ctx.paths.state_dir.display());
 
-    let live = session::list(&ctx.tmux, ctx.scope.as_deref()).unwrap_or_default();
-    let all = session::list(&ctx.tmux, None).unwrap_or_default();
-    println!(
-        "  sessions:    {} in scope, {} total",
-        live.len(),
-        all.len()
-    );
+    let all = session::list(&ctx.tmux).unwrap_or_default();
+    println!("  sessions:    {} total", all.len());
 
     if tmux_version.is_none() {
         anyhow::bail!("tmux not found on PATH");

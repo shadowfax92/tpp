@@ -23,7 +23,6 @@ pub struct Config {
     /// Prefix applied to all tpp-created tmux session names. Empty = no prefix.
     #[serde(default = "default_session_prefix")]
     pub session_prefix: String,
-    pub scope: ScopeCfg,
     pub ls: LsCfg,
     pub send: SendCfg,
     pub new: NewCfg,
@@ -31,42 +30,19 @@ pub struct Config {
     pub tail: TailCfg,
     pub exit: ExitCfg,
     pub wait: WaitCfg,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum ScopeMode {
-    /// Nearest `git rev-parse --show-toplevel` (a worktree is its own scope).
-    #[default]
-    Git,
-    /// The exact current working directory.
-    Cwd,
-    /// No scoping — `ls` shows every tpp session.
-    None,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct ScopeCfg {
-    pub mode: ScopeMode,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum LsDefault {
-    /// Legacy scoped-listing preference, accepted for config compatibility.
-    Scope,
-    /// All tpp sessions everywhere.
-    #[default]
-    All,
+    /// Legacy no-op accepted so older config files keep loading after scopes were removed.
+    #[serde(rename = "scope", default, skip_serializing)]
+    pub legacy_scope: Option<toml::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LsCfg {
-    pub default: LsDefault,
     /// Also show sessions that exited within this many hours (0 = never).
     pub show_exited_hours: u64,
+    /// Legacy no-op accepted so older config files keep loading after scopes were removed.
+    #[serde(rename = "default", default, skip_serializing)]
+    pub legacy_default: Option<toml::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,7 +102,6 @@ impl Default for Config {
             socket: None,
             shell: None,
             session_prefix: default_session_prefix(),
-            scope: ScopeCfg::default(),
             ls: LsCfg::default(),
             send: SendCfg::default(),
             new: NewCfg::default(),
@@ -134,22 +109,16 @@ impl Default for Config {
             tail: TailCfg::default(),
             exit: ExitCfg::default(),
             wait: WaitCfg::default(),
+            legacy_scope: None,
         }
     }
 }
 
-impl Default for ScopeCfg {
-    fn default() -> Self {
-        Self {
-            mode: ScopeMode::Git,
-        }
-    }
-}
 impl Default for LsCfg {
     fn default() -> Self {
         Self {
-            default: LsDefault::All,
             show_exited_hours: 24,
+            legacy_default: None,
         }
     }
 }
@@ -224,15 +193,7 @@ shell = ""
 # Prefix applied to all tpp-created tmux session names. Empty = no prefix.
 session_prefix = "tpp/"
 
-[scope]
-# How sessions are grouped so they're "shared in a directory":
-#   git  = nearest git toplevel (a worktree is its own scope)   [default]
-#   cwd  = the exact current directory
-#   none = no scoping; `ls` shows every tpp session
-mode = "git"
-
 [ls]
-default = "all"          # compatibility setting; `ls` shows all sessions
 show_exited_hours = 24   # also surface sessions that exited in the last N hours
 
 [send]
@@ -275,6 +236,13 @@ mod tests {
     }
 
     #[test]
+    fn parse_legacy_scope_config_without_using_it() {
+        let cfg = Config::parse("[scope]\nmode = \"git\"\n[ls]\ndefault = \"scope\"\n").unwrap();
+
+        assert_eq!(cfg.session_prefix, "tpp/");
+    }
+
+    #[test]
     fn parse_allows_empty_session_prefix() {
         let cfg = Config::parse("session_prefix = \"\"\n").unwrap();
 
@@ -284,5 +252,11 @@ mod tests {
     #[test]
     fn starter_config_documents_session_prefix() {
         assert!(STARTER_CONFIG.contains("session_prefix = \"tpp/\""));
+    }
+
+    #[test]
+    fn starter_config_does_not_document_scope() {
+        assert!(!STARTER_CONFIG.contains("[scope]"));
+        assert!(!STARTER_CONFIG.contains("mode = \"git\""));
     }
 }

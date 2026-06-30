@@ -1,4 +1,4 @@
-//! Session model: create tpp sessions (tagged with their scope), list and inspect them.
+//! Session model: create, list, and inspect tpp-managed tmux sessions.
 //!
 //! Discovery is stateless — tmux itself holds the truth. Each session carries user-options
 //! (`@tpp*`) we read back with a single `list-sessions -F`. A leading `=` makes every target
@@ -12,14 +12,12 @@ use serde::Serialize;
 use crate::config::Config;
 use crate::tmux::{exact, tgt, Tmux, TmuxError};
 
-/// Field separator inside the `list-sessions` format — a control byte that won't appear in
-/// session names, scopes, or commands.
+/// Field separator inside the `list-sessions` format.
 const SEP: char = '\u{1f}';
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionInfo {
     pub name: String,
-    pub scope: String,
     pub dir: String,
     pub command: String,
     pub created: i64,
@@ -121,13 +119,11 @@ pub fn resolve_existing_name(tmux: &Tmux, cfg: &Config, name: &str) -> String {
     }
 }
 
-/// List tpp-managed sessions. When `scope` is `Some`, only sessions stamped with that scope
-/// are returned; `None` returns every tpp session. Non-tpp tmux sessions are always excluded.
-pub fn list(tmux: &Tmux, scope: Option<&str>) -> Result<Vec<SessionInfo>> {
+/// List tpp-managed sessions on the selected tmux socket.
+pub fn list(tmux: &Tmux) -> Result<Vec<SessionInfo>> {
     let fmt = [
         "#{session_name}",
         "#{@tpp}",
-        "#{@tpp_scope}",
         "#{@tpp_dir}",
         "#{@tpp_cmd}",
         "#{session_created}",
@@ -149,7 +145,7 @@ pub fn list(tmux: &Tmux, scope: Option<&str>) -> Result<Vec<SessionInfo>> {
             continue;
         }
         let f: Vec<&str> = line.split(SEP).collect();
-        if f.len() < 9 {
+        if f.len() < 8 {
             continue;
         }
         if f[1] != "1" {
@@ -157,31 +153,24 @@ pub fn list(tmux: &Tmux, scope: Option<&str>) -> Result<Vec<SessionInfo>> {
         }
         let s = SessionInfo {
             name: f[0].to_string(),
-            scope: f[2].to_string(),
-            dir: f[3].to_string(),
-            command: f[4].to_string(),
-            created: f[5].parse().unwrap_or(0),
-            attached: f[6] == "1",
-            windows: f[7].parse().unwrap_or(1),
-            dead: f[8] == "1",
-            exited: f[8] == "1",
+            dir: f[2].to_string(),
+            command: f[3].to_string(),
+            created: f[4].parse().unwrap_or(0),
+            attached: f[5] == "1",
+            windows: f[6].parse().unwrap_or(1),
+            dead: f[7] == "1",
+            exited: f[7] == "1",
         };
-        if let Some(scope) = scope {
-            if s.scope != scope {
-                continue;
-            }
-        }
         out.push(s);
     }
     out.sort_by(|a, b| b.created.cmp(&a.created));
     Ok(out)
 }
 
-pub struct NewOpts<'a> {
+pub struct NewOpts {
     pub name: String,
     pub dir: Option<String>,
     pub command: Vec<String>,
-    pub scope: Option<&'a str>,
     pub width: Option<u32>,
     pub height: Option<u32>,
 }
@@ -244,7 +233,6 @@ pub fn create(tmux: &Tmux, cfg: &Config, opts: NewOpts) -> Result<String> {
         command.join(" ")
     };
     set_opt(tmux, &target, "@tpp", "1");
-    set_opt(tmux, &target, "@tpp_scope", opts.scope.unwrap_or(""));
     set_opt(tmux, &target, "@tpp_dir", opts.dir.as_deref().unwrap_or(""));
     set_opt(tmux, &target, "@tpp_cmd", &cmd_label);
     set_opt(tmux, &target, "@tpp_created", &now_epoch().to_string());

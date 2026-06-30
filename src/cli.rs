@@ -26,10 +26,6 @@ pub struct Cli {
     #[arg(short = 'L', long, global = true, value_name = "NAME")]
     pub socket: Option<String>,
 
-    /// Scope directory to operate in, or `none` to disable scoping.
-    #[arg(long, global = true, value_name = "DIR")]
-    pub scope: Option<String>,
-
     /// Machine-readable JSON output (where supported).
     #[arg(long, global = true)]
     pub json: bool,
@@ -107,7 +103,7 @@ pub enum Cmd {
     /// Write a starter config (and optionally install fish completions).
     Init(InitArgs),
 
-    /// Check tmux availability and print resolved paths and scope.
+    /// Check tmux availability and print resolved paths.
     Doctor,
 
     /// Generate shell completions (bash, zsh, fish, …).
@@ -204,7 +200,7 @@ pub struct AttachArgs {
 
 #[derive(Args, Debug)]
 pub struct SendArgs {
-    /// Target session (default: the sole session in scope).
+    /// Target session (default: the sole session, or a picker).
     #[arg(short = 't', long, value_name = "SESSION")]
     pub target: Option<String>,
     /// Read text from a file.
@@ -233,7 +229,7 @@ pub struct SendArgs {
 
 #[derive(Args, Debug)]
 pub struct PasteArgs {
-    /// Target session (default: the sole session in scope).
+    /// Target session (default: the sole session, or a picker).
     #[arg(short = 't', long, value_name = "SESSION")]
     pub target: Option<String>,
     /// Read text from a file.
@@ -256,7 +252,7 @@ pub struct PasteArgs {
 
 #[derive(Args, Debug)]
 pub struct CatArgs {
-    /// Sessions to print (default: the sole session in scope).
+    /// Sessions to print (default: the sole session, or a picker).
     #[arg(value_name = "SESSION")]
     pub sessions: Vec<String>,
     /// Trailing lines to print (0 = visible screen only; default from config).
@@ -272,7 +268,7 @@ pub struct CatArgs {
 
 #[derive(Args, Debug)]
 pub struct TailArgs {
-    /// Sessions to follow (default: the sole session in scope).
+    /// Sessions to follow (default: the sole session, or a picker).
     #[arg(value_name = "SESSION")]
     pub sessions: Vec<String>,
     /// Poll interval in ms (default from config).
@@ -285,7 +281,7 @@ pub struct TailArgs {
 
 #[derive(Args, Debug)]
 pub struct WaitArgs {
-    /// Target session (default: the sole session in scope).
+    /// Target session (default: the sole session, or a picker).
     #[arg(short = 't', long, value_name = "SESSION")]
     pub target: Option<String>,
     /// Wait until this text appears in the pane.
@@ -310,7 +306,7 @@ pub struct RmArgs {
     /// Sessions to remove.
     #[arg(value_name = "SESSION")]
     pub sessions: Vec<String>,
-    /// Remove every tpp session in the current scope.
+    /// Remove every tpp session.
     #[arg(long)]
     pub all: bool,
     /// Record output before killing.

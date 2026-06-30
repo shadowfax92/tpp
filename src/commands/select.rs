@@ -35,7 +35,7 @@ pub fn one(ctx: &Ctx, explicit: Option<&str>, action: &str) -> Result<String> {
     if let Some(name) = explicit {
         return Ok(session::resolve_existing_name(&ctx.tmux, &ctx.cfg, name));
     }
-    let picks = from_scope(ctx, SelectionMode::Single, action)?;
+    let picks = from_all(ctx, SelectionMode::Single, action)?;
     picks
         .into_iter()
         .next()
@@ -49,13 +49,13 @@ pub fn many(ctx: &Ctx, explicit: &[String], action: &str) -> Result<Vec<String>>
             .map(|name| session::resolve_existing_name(&ctx.tmux, &ctx.cfg, name))
             .collect());
     }
-    from_scope(ctx, SelectionMode::Multi, action)
+    from_all(ctx, SelectionMode::Multi, action)
 }
 
-fn from_scope(ctx: &Ctx, mode: SelectionMode, action: &str) -> Result<Vec<String>> {
-    let sessions = session::list(&ctx.tmux, ctx.scope.as_deref())?;
+fn from_all(ctx: &Ctx, mode: SelectionMode, action: &str) -> Result<Vec<String>> {
+    let sessions = session::list(&ctx.tmux)?;
     match sessions.len() {
-        0 => die(code::NOT_FOUND, format!("no sessions in scope to {action}")),
+        0 => die(code::NOT_FOUND, format!("no sessions to {action}")),
         1 => Ok(vec![sessions[0].name.clone()]),
         _ => {
             let names: Vec<String> = sessions.into_iter().map(|s| s.name).collect();
