@@ -215,10 +215,10 @@ pub struct SendArgs {
     /// Use bracketed paste (verbatim multi-line; good for TUIs).
     #[arg(short = 'p', long)]
     pub paste: bool,
-    /// Press Enter after sending.
+    /// Press Enter after sending typed text.
     #[arg(short = 'e', long)]
     pub enter: bool,
-    /// Text to send (literal unless --keys).
+    /// Text to send (literal unless --keys; use -- before option-looking text).
     #[arg(value_name = "TEXT")]
     pub text: Vec<String>,
 }
@@ -234,7 +234,7 @@ pub struct PasteArgs {
     /// Read text from stdin.
     #[arg(long, conflicts_with = "file")]
     pub stdin: bool,
-    /// Don't press Enter after pasting.
+    /// Leave pasted text unsubmitted.
     #[arg(long)]
     pub no_enter: bool,
     /// Text to paste.

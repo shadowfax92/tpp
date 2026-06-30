@@ -158,7 +158,7 @@ complete -c tpp -n "__fish_tpp_using_subcommand send" -l config -d 'Config file 
 complete -c tpp -n "__fish_tpp_using_subcommand send" -l stdin -d 'Read text from stdin'
 complete -c tpp -n "__fish_tpp_using_subcommand send" -s k -l keys -d 'Interpret args as tmux key names (Enter, C-c, Escape) instead of literal text'
 complete -c tpp -n "__fish_tpp_using_subcommand send" -s p -l paste -d 'Use bracketed paste (verbatim multi-line; good for TUIs)'
-complete -c tpp -n "__fish_tpp_using_subcommand send" -s e -l enter -d 'Press Enter after sending'
+complete -c tpp -n "__fish_tpp_using_subcommand send" -s e -l enter -d 'Press Enter after sending typed text'
 complete -c tpp -n "__fish_tpp_using_subcommand send" -l json -d 'Machine-readable JSON output (where supported)'
 complete -c tpp -n "__fish_tpp_using_subcommand send" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand send" -s h -l help -d 'Print help'
@@ -170,7 +170,7 @@ complete -c tpp -n "__fish_tpp_using_subcommand s" -l config -d 'Config file pat
 complete -c tpp -n "__fish_tpp_using_subcommand s" -l stdin -d 'Read text from stdin'
 complete -c tpp -n "__fish_tpp_using_subcommand s" -s k -l keys -d 'Interpret args as tmux key names (Enter, C-c, Escape) instead of literal text'
 complete -c tpp -n "__fish_tpp_using_subcommand s" -s p -l paste -d 'Use bracketed paste (verbatim multi-line; good for TUIs)'
-complete -c tpp -n "__fish_tpp_using_subcommand s" -s e -l enter -d 'Press Enter after sending'
+complete -c tpp -n "__fish_tpp_using_subcommand s" -s e -l enter -d 'Press Enter after sending typed text'
 complete -c tpp -n "__fish_tpp_using_subcommand s" -l json -d 'Machine-readable JSON output (where supported)'
 complete -c tpp -n "__fish_tpp_using_subcommand s" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand s" -s h -l help -d 'Print help'
@@ -180,7 +180,7 @@ complete -c tpp -n "__fish_tpp_using_subcommand paste" -s f -l file -d 'Read tex
 complete -c tpp -n "__fish_tpp_using_subcommand paste" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
 complete -c tpp -n "__fish_tpp_using_subcommand paste" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
 complete -c tpp -n "__fish_tpp_using_subcommand paste" -l stdin -d 'Read text from stdin'
-complete -c tpp -n "__fish_tpp_using_subcommand paste" -l no-enter -d 'Don\'t press Enter after pasting'
+complete -c tpp -n "__fish_tpp_using_subcommand paste" -l no-enter -d 'Leave pasted text unsubmitted'
 complete -c tpp -n "__fish_tpp_using_subcommand paste" -l json -d 'Machine-readable JSON output (where supported)'
 complete -c tpp -n "__fish_tpp_using_subcommand paste" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand paste" -s h -l help -d 'Print help'
