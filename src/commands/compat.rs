@@ -28,7 +28,10 @@ where
 }
 
 fn new_session_option_takes_value(arg: &str) -> bool {
-    matches!(arg, "-c" | "-e" | "-F" | "-f" | "-n" | "-s" | "-t" | "-x" | "-y")
+    matches!(
+        arg,
+        "-c" | "-e" | "-F" | "-f" | "-n" | "-s" | "-t" | "-x" | "-y"
+    )
 }
 
 #[derive(Debug, Default)]
@@ -330,17 +333,16 @@ mod tests {
             &Config::default(),
             args(&["-d", "-s", "api", "--", "cmd", "-s", "inner"]),
         );
-        let target_args =
-            prefix_target_args(&Config::default(), args(&["-t", "api", "--", "-t", "inner"]));
+        let target_args = prefix_target_args(
+            &Config::default(),
+            args(&["-t", "api", "--", "-t", "inner"]),
+        );
 
         assert_eq!(
             new_args,
             args(&["-d", "-s", "tpp/api", "--", "cmd", "-s", "inner"])
         );
-        assert_eq!(
-            target_args,
-            args(&["-t", "tpp/api", "--", "-t", "inner"])
-        );
+        assert_eq!(target_args, args(&["-t", "tpp/api", "--", "-t", "inner"]));
     }
 
     #[test]
@@ -376,9 +378,7 @@ mod tests {
 
         assert_eq!(
             rewritten,
-            args(&[
-                "-d", "-s", "tpp/api", "-c", "/tmp", "--", "sh", "-c", "pwd", "-s", "inner",
-            ])
+            args(&["-d", "-s", "tpp/api", "-c", "/tmp", "--", "sh", "-c", "pwd", "-s", "inner",])
         );
         assert_eq!(meta.name.as_deref(), Some("tpp/api"));
         assert_eq!(meta.dir.as_deref(), Some("/tmp"));

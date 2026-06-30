@@ -1,14 +1,13 @@
 //! Session lifecycle: `run`, `new`, `ls`, `attach`, `rm`, `exit`, `clear`, `has`, `rename`.
 
 use std::path::Path;
-use std::process::{Command, Stdio};
 
 use anyhow::Result;
 use serde::Serialize;
 
 use crate::cli::{AttachArgs, ExitArgs, HasArgs, LsArgs, NewArgs, RenameArgs, RmArgs, RunArgs};
 use crate::commands::io::{record_session, run_wait};
-use crate::commands::{code, current_session, die, Ctx};
+use crate::commands::{code, current_session, die, select, Ctx};
 use crate::config::LsDefault;
 use crate::output::{paint, print_json, Style};
 use crate::session::{self, now_epoch, NewOpts};
@@ -180,13 +179,16 @@ fn humanize_age(secs: i64) -> String {
     }
 }
 
+fn ls_scope_filter<'a>(
+    _args: &LsArgs,
+    _default: LsDefault,
+    _current_scope: Option<&'a str>,
+) -> Option<&'a str> {
+    None
+}
+
 pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
-    let effective_all = args.all || matches!(ctx.cfg.ls.default, LsDefault::All);
-    let scope_filter = if effective_all {
-        None
-    } else {
-        ctx.scope.as_deref()
-    };
+    let scope_filter = ls_scope_filter(&args, ctx.cfg.ls.default, ctx.scope.as_deref());
 
     let live = session::list(&ctx.tmux, scope_filter)?;
     let now = now_epoch();
@@ -205,7 +207,8 @@ pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
 
     let show_exited = args.exited || (!args.no_exited && ctx.cfg.ls.show_exited_hours > 0);
     if show_exited {
-        let store = Store::new(&ctx.paths);
+        let store_socket = ctx.tmux.store_socket();
+        let store = Store::new(&ctx.paths, store_socket.as_deref());
         let hours = if args.exited && ctx.cfg.ls.show_exited_hours == 0 {
             24
         } else {
@@ -253,7 +256,12 @@ pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
     }
 
     let name_w = rows.iter().map(|r| r.name.len()).max().unwrap_or(4).max(4);
-    let status_w = rows.iter().map(|r| r.status.len()).max().unwrap_or(6).max(6);
+    let status_w = rows
+        .iter()
+        .map(|r| r.status.len())
+        .max()
+        .unwrap_or(6)
+        .max(6);
     for r in &rows {
         let status = match r.status.as_str() {
             "running" => paint(&r.status, Style::Green),
@@ -276,53 +284,8 @@ pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
     Ok(())
 }
 
-fn fzf_pick(names: &[String]) -> Option<String> {
-    if Command::new("fzf").arg("--version").output().is_err() {
-        return None;
-    }
-    use std::io::Write;
-    let mut child = Command::new("fzf")
-        .args(["--prompt", "tpp> ", "--height", "40%", "--reverse"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .ok()?;
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(names.join("\n").as_bytes());
-    }
-    let out = child.wait_with_output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let pick = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if pick.is_empty() {
-        None
-    } else {
-        Some(pick)
-    }
-}
-
 pub fn attach(ctx: &Ctx, args: AttachArgs) -> Result<()> {
-    let name = match &args.session {
-        Some(s) => session::resolve_existing_name(&ctx.tmux, &ctx.cfg, s),
-        None => {
-            let sessions = session::list(&ctx.tmux, ctx.scope.as_deref())?;
-            match sessions.len() {
-                0 => die(code::NOT_FOUND, "no sessions in scope to attach to"),
-                1 => sessions[0].name.clone(),
-                _ => {
-                    let names: Vec<String> = sessions.iter().map(|s| s.name.clone()).collect();
-                    match fzf_pick(&names) {
-                        Some(p) => p,
-                        None => die(
-                            code::NOT_FOUND,
-                            format!("name a session to attach: {}", names.join(", ")),
-                        ),
-                    }
-                }
-            }
-        }
-    };
+    let name = select::one(ctx, args.session.as_deref(), "attach to")?;
 
     if !session::exists(&ctx.tmux, &name) {
         die(code::NOT_FOUND, format!("no such session: {name}"));
@@ -343,10 +306,7 @@ pub fn rm(ctx: &Ctx, args: RmArgs) -> Result<()> {
             .map(|s| s.name)
             .collect()
     } else {
-        args.sessions
-            .iter()
-            .map(|name| session::resolve_existing_name(&ctx.tmux, &ctx.cfg, name))
-            .collect()
+        select::many(ctx, &args.sessions, "remove")?
     };
 
     if targets.is_empty() {
@@ -376,15 +336,12 @@ pub fn rm(ctx: &Ctx, args: RmArgs) -> Result<()> {
 }
 
 pub fn exit(ctx: &Ctx, args: ExitArgs) -> Result<()> {
-    let name = match args.session.clone() {
-        Some(n) => session::resolve_existing_name(&ctx.tmux, &ctx.cfg, &n),
-        None => match current_session(&ctx.tmux) {
-            Some(n) => n,
-            None => die(
-                2,
-                "not inside a tmux session — name the session to exit (tpp exit NAME)",
-            ),
-        },
+    let name = if let Some(name) = args.session.as_deref() {
+        select::one(ctx, Some(name), "exit")?
+    } else if let Some(name) = current_session(&ctx.tmux) {
+        name
+    } else {
+        select::one(ctx, None, "exit")?
     };
     if !args.no_record && session::exists(&ctx.tmux, &name) {
         let _ = record_session(ctx, &name);
@@ -397,7 +354,8 @@ pub fn exit(ctx: &Ctx, args: ExitArgs) -> Result<()> {
 }
 
 pub fn clear(ctx: &Ctx) -> Result<()> {
-    let n = Store::new(&ctx.paths).clear()?;
+    let store_socket = ctx.tmux.store_socket();
+    let n = Store::new(&ctx.paths, store_socket.as_deref()).clear()?;
     if ctx.json {
         print_json(&serde_json::json!({ "cleared": n }))?;
     } else if !ctx.quiet {
@@ -420,25 +378,34 @@ pub fn has(ctx: &Ctx, args: HasArgs) -> Result<()> {
 }
 
 pub fn rename(ctx: &Ctx, args: RenameArgs) -> Result<()> {
-    let name = session::resolve_existing_name(&ctx.tmux, &ctx.cfg, &args.session);
-    if !session::exists(&ctx.tmux, &name) {
-        die(
-            code::NOT_FOUND,
-            format!("no such session: {}", args.session),
-        );
+    let (session_name, new_name) = match args.names.as_slice() {
+        [session_name, new_name] => (
+            session::resolve_existing_name(&ctx.tmux, &ctx.cfg, session_name),
+            session::prefixed_name(&ctx.cfg, new_name),
+        ),
+        [new_name] => (
+            select::one(ctx, None, "rename")?,
+            session::prefixed_name(&ctx.cfg, new_name),
+        ),
+        _ => die(2, "usage: tpp rename [SESSION] <NEW_NAME>"),
+    };
+
+    if !session::exists(&ctx.tmux, &session_name) {
+        die(code::NOT_FOUND, format!("no such session: {session_name}"));
     }
-    let new_name = session::prefixed_name(&ctx.cfg, &args.new_name);
     ctx.tmux
-        .run(["rename-session", "-t", &exact(&name), &new_name])?;
+        .run(["rename-session", "-t", &exact(&session_name), &new_name])?;
     if !ctx.quiet {
-        eprintln!("renamed {name} -> {new_name}");
+        eprintln!("renamed {session_name} -> {new_name}");
     }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{humanize_age, slug};
+    use super::{humanize_age, ls_scope_filter, slug};
+    use crate::cli::LsArgs;
+    use crate::config::LsDefault;
 
     #[test]
     fn slug_sanitizes() {
@@ -454,5 +421,30 @@ mod tests {
         assert_eq!(humanize_age(120), "2m");
         assert_eq!(humanize_age(7200), "2h");
         assert_eq!(humanize_age(172_800), "2d");
+    }
+
+    #[test]
+    fn ls_scope_filter_is_universal() {
+        let scope = Some("/tmp/worktree");
+
+        assert_eq!(
+            ls_scope_filter(&LsArgs::default(), LsDefault::Scope, scope),
+            None
+        );
+        assert_eq!(
+            ls_scope_filter(&LsArgs::default(), LsDefault::All, scope),
+            None
+        );
+        assert_eq!(
+            ls_scope_filter(
+                &LsArgs {
+                    all: true,
+                    ..LsArgs::default()
+                },
+                LsDefault::Scope,
+                scope,
+            ),
+            None
+        );
     }
 }

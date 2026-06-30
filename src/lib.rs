@@ -35,7 +35,8 @@ pub fn run() -> Result<()> {
     let scope = scope::resolve(cfg.scope.mode, cli.scope.as_deref())?;
 
     // Forget stale exited records (best-effort; never fails a command).
-    let _ = Store::new(&paths).prune(cfg.exit.prune_hours);
+    let store_socket = tmux.store_socket();
+    let _ = Store::new(&paths, store_socket.as_deref()).prune(cfg.exit.prune_hours);
 
     let ctx = Ctx {
         tmux,
@@ -47,7 +48,7 @@ pub fn run() -> Result<()> {
         quiet: cli.quiet,
     };
 
-    // Bare `tpp` lists the current scope.
+    // Bare `tpp` lists every tpp session on the selected tmux server.
     let cmd = cli.cmd.unwrap_or_else(|| Cmd::Ls(LsArgs::default()));
 
     match cmd {

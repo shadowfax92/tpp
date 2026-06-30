@@ -15,7 +15,7 @@ use clap::{Args, Parser, Subcommand};
     version,
     about = "tmux++ — share, run, capture, and paste into tmux sessions",
     long_about = "tmux++ (tpp) — an ergonomic wrapper around tmux for humans and agents.\n\n\
-        Share sessions within a directory, run commands in detached sessions, capture and \
+        List all tpp sessions, run commands in detached sessions, capture and \
         follow their output, and paste prompts in verbatim. Sessions live in your normal \
         tmux server, so `tmx`, `grove`, and plain `tmux` all see them.",
     disable_help_subcommand = true,
@@ -42,7 +42,7 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     pub config: Option<PathBuf>,
 
-    /// Defaults to `ls` (sessions in the current scope) when omitted.
+    /// Defaults to `ls` (all tpp sessions) when omitted.
     #[command(subcommand)]
     pub cmd: Option<Cmd>,
 }
@@ -57,7 +57,7 @@ pub enum Cmd {
     #[command(visible_alias = "n")]
     New(NewArgs),
 
-    /// List sessions in the current scope.
+    /// List all tpp sessions.
     #[command(visible_aliases = ["l", "list"])]
     Ls(LsArgs),
 
@@ -152,7 +152,11 @@ pub struct RunArgs {
     #[arg(long)]
     pub record: bool,
     /// The command to run (everything after `--`).
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "CMD")]
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        value_name = "CMD"
+    )]
     pub command: Vec<String>,
 }
 
@@ -171,13 +175,17 @@ pub struct NewArgs {
     #[arg(short = 'd', long, hide = true)]
     pub detached: bool,
     /// Command to run (defaults to your shell).
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "CMD")]
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        value_name = "CMD"
+    )]
     pub command: Vec<String>,
 }
 
 #[derive(Args, Debug, Default)]
 pub struct LsArgs {
-    /// Show all tpp sessions, not just the current scope.
+    /// Accepted for compatibility; `ls` already shows all tpp sessions.
     #[arg(short = 'a', long)]
     pub all: bool,
     /// Include recently exited sessions.
@@ -215,7 +223,11 @@ pub struct SendArgs {
     #[arg(short = 'e', long)]
     pub enter: bool,
     /// Text to send (literal unless --keys).
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "TEXT")]
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        value_name = "TEXT"
+    )]
     pub text: Vec<String>,
 }
 
@@ -234,7 +246,11 @@ pub struct PasteArgs {
     #[arg(long)]
     pub no_enter: bool,
     /// Text to paste.
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "TEXT")]
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        value_name = "TEXT"
+    )]
     pub text: Vec<String>,
 }
 
@@ -324,10 +340,9 @@ pub struct HasArgs {
 
 #[derive(Args, Debug)]
 pub struct RenameArgs {
-    /// Session to rename.
-    pub session: String,
-    /// New name.
-    pub new_name: String,
+    /// With one arg: new name, and pick the session. With two: SESSION NEW_NAME.
+    #[arg(value_name = "SESSION_OR_NEW_NAME", num_args = 1..=2)]
+    pub names: Vec<String>,
 }
 
 #[derive(Args, Debug)]
@@ -372,6 +387,10 @@ pub struct CompletionsArgs {
 /// Catch-all positional bucket for hidden tmux-compat verbs — forwarded to tmux verbatim.
 #[derive(Args, Debug)]
 pub struct RawArgs {
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "ARGS")]
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        value_name = "ARGS"
+    )]
     pub args: Vec<String>,
 }

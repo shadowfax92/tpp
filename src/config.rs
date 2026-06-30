@@ -54,10 +54,10 @@ pub struct ScopeCfg {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum LsDefault {
-    /// Only sessions in the current scope (directory).
-    #[default]
+    /// Legacy scoped-listing preference, accepted for config compatibility.
     Scope,
     /// All tpp sessions everywhere.
+    #[default]
     All,
 }
 
@@ -148,7 +148,7 @@ impl Default for ScopeCfg {
 impl Default for LsCfg {
     fn default() -> Self {
         Self {
-            default: LsDefault::Scope,
+            default: LsDefault::All,
             show_exited_hours: 24,
         }
     }
@@ -232,7 +232,7 @@ session_prefix = "tpp/"
 mode = "git"
 
 [ls]
-default = "scope"        # "scope" (current dir) or "all"
+default = "all"          # compatibility setting; `ls` shows all sessions
 show_exited_hours = 24   # also surface sessions that exited in the last N hours
 
 [send]

@@ -4,7 +4,7 @@
 
 **tmux++ — share, run, capture, and paste into tmux sessions.**
 
-*An ergonomic `tmux` wrapper for humans and agents: directory-scoped sessions, one-shot command runs, verbatim paste, and output capture — all on your normal tmux server.*
+*An ergonomic `tmux` wrapper for humans and agents: universal session listing, one-shot command runs, verbatim paste, and output capture — all on your normal tmux server.*
 
 </div>
 
@@ -17,9 +17,9 @@ fingers): spin up a detached session in a directory, paste a prompt into it verb
 output, and tear it down — with short commands, stable exit codes, and `--json` everywhere it
 matters. It's a drop-in replacement for `rmux` in the `sf-auto-mux` agent-dispatch flow.
 
-- 🗂️ **Sessions shared in a directory** — every session is tagged with the directory it was
-  born in (its *scope* — the git root by default). `tpp ls` shows the sessions for where you
-  are, so any human or agent working in that directory sees the same set.
+- 🗂️ **Universal session listing** — `tpp ls` shows every `tpp` session on the selected tmux
+  socket, no matter which directory created it. Sessions still keep a scope tag for commands
+  that need scoped defaults.
 - ▶️ **Run a command** — `tpp run -- <cmd>` starts a detached session and prints its name.
   `--wait` runs it to completion, streaming output and exiting with its status.
 - 📥 **Get the output** — `tpp cat` snapshots, `tpp tail` follows, `tpp wait` blocks until text
@@ -32,7 +32,7 @@ matters. It's a drop-in replacement for `rmux` in the `sf-auto-mux` agent-dispat
 
 ## Install
 
-Requires `tmux` 3.3+ and Rust (stable). `fzf` is optional (powers the no-arg attach picker).
+Requires `tmux` 3.3+ and Rust (stable). `fzf` is optional (powers omitted-session pickers).
 
 ```sh
 cd tpp
@@ -52,7 +52,7 @@ tpp doctor          # check tmux, show resolved socket / scope / paths
 
 ```sh
 # Humans
-tpp                          # list sessions in the current directory (defaults to `ls`)
+tpp                          # list all tpp sessions (defaults to `ls`)
 tpp new -s api -- npm run dev # named detached session running a command
 tpp attach api               # attach (switch-client if you're already in tmux)
 tpp cat api                  # print its recent output
@@ -79,26 +79,26 @@ Run `tpp <cmd> --help` for full flags. Aliases in parentheses.
 |---|---|
 | `run` (`r`) | Run a command in a new detached session; prints its name. `--wait` streams to completion and exits with the command's status. |
 | `new` (`n`) | Create a detached session (your shell if no command). `-A` = ok if it already exists. |
-| `ls` (`l`, `list`) | List sessions in the current scope. `-a` all, `--exited` include recorded, `--json`, `-q` names-only. |
+| `ls` (`l`, `list`) | List all tpp sessions. `-a` is accepted for compatibility, `--exited` include recorded, `--json`, `-q` names-only. |
 | `attach` (`a`) | Attach (or `switch-client` if you're inside tmux). No arg → sole session, or an `fzf` picker. |
-| `rm` (`kill`, `remove`) | Kill sessions. `--all` (current scope), `--record` (save output first). |
+| `rm` (`kill`, `remove`) | Kill sessions. No args → sole session, or an `fzf --multi` picker. `--all` (current scope), `--record` (save output first). |
 | `exit` (`e`, `quit`) | Record the current session's output, then kill it. Run it from inside the session. |
-| `rename` | Rename a session. |
+| `rename` | Rename a session. `rename NEW` picks the old session; `rename OLD NEW` is explicit. |
 | `has` | Exit `0` if a session exists, else `1`. Exact match — never prefix-matches. |
 | `clear` (`clr`) | Delete recorded exited-session transcripts. |
 
 **Output**
 | Command | Does |
 |---|---|
-| `cat` (`cap`, `capture`) | Print a session's output. `-n N` trailing lines, `-S` full scrollback, `-e` keep colors, `--json`. Replays from the saved transcript if the session has exited. |
-| `tail` (`follow`) | Follow output, printing new lines as they appear. Multiple sessions get `[name]` prefixes. |
+| `cat` (`cap`, `capture`) | Print session output. No args → sole session, or an `fzf --multi` picker. `-n N` trailing lines, `-S` full scrollback, `-e` keep colors, `--json`. Replays from the saved transcript if the session has exited. |
+| `tail` (`follow`) | Follow output, printing new lines as they appear. No args → sole session, or an `fzf --multi` picker. Multiple sessions get `[name]` prefixes. |
 | `wait` | Block until `--text <s>` appears, output is `--idle`, or the pane will `--exit`. `--timeout` (exit `4`), `--json`. |
 
 **Input**
 | Command | Does |
 |---|---|
-| `send` (`s`) | Send to a session: literal `TEXT`, `--file`/`--stdin`, or `--keys` (tmux key names like `Enter`, `C-c`). `--paste` forces bracketed paste; `--enter` appends Enter. |
-| `paste` | Bracketed paste + Enter (sugar over `send --paste --enter`). `--no-enter` to skip submit. |
+| `send` (`s`) | Send to a session: literal `TEXT`, `--file`/`--stdin`, or `--keys` (tmux key names like `Enter`, `C-c`). No `-t` → sole session, or an `fzf` picker. `--paste` forces bracketed paste; `--enter` appends Enter. |
+| `paste` | Bracketed paste + Enter (sugar over `send --paste --enter`). No `-t` → sole session, or an `fzf` picker. `--no-enter` to skip submit. |
 
 **Meta**: `config` (`path`/`show`/`edit`/`init`), `init`, `doctor`, `completions <shell>`.
 
@@ -107,15 +107,15 @@ Run `tpp <cmd> --help` for full flags. Aliases in parentheses.
 passthrough). These forward to `tmux`, so a script written for `rmux` works after replacing the
 word `rmux` with `tpp` — see [Replacing rmux](#replacing-rmux-in-sf-auto-mux).
 
-## Directory scope — "sharing sessions in a directory"
+## Scope tags
 
 Each session is stamped (as tmux session user-options) with the directory it was created in.
 By default that's the **nearest git toplevel**, so a `grove` worktree is its own scope. `tpp ls`
-filters to your current scope, which is what makes sessions feel "shared in a directory": two
-agents (or you and an agent) working in the same worktree see the same sessions.
+is universal and shows all `tpp` sessions, while commands with omitted targets can still use the
+current scope to pick the sole matching session.
 
-- `--scope <dir>` operate as if in `<dir>`; `--scope none` / `tpp ls -a` ignore scoping.
-- Change the default in config: `[scope] mode = "git" | "cwd" | "none"`.
+- `--scope <dir>` operates as if in `<dir>` for scoped target selection; `--scope none` disables that selection scope.
+- Change scope tagging/selection in config: `[scope] mode = "git" | "cwd" | "none"`.
 
 Because tpp stores the tag *on the tmux session itself*, there's no separate index to get out
 of sync, and your normal tmux tools still see everything.
@@ -134,7 +134,7 @@ session_prefix = "tpp/"  # prefix for tpp-created tmux sessions; "" disables pre
 mode = "git"             # git | cwd | none — how sessions group by directory
 
 [ls]
-default = "scope"        # "scope" (current dir) or "all"
+default = "all"          # compatibility setting; `ls` shows all sessions
 show_exited_hours = 24   # also surface recently-exited sessions in `ls`
 
 [send]
@@ -166,6 +166,8 @@ timeout_ms = 30000
 - **`--json`** on `ls`, `cat`, `wait`, and `run --wait`-adjacent flows.
 - **Stable exit codes:** `0` ok · `2` usage (clap) · `3` not found · `4` timeout · `1` other.
 - **`has`** is exit-code-only; **`-q`** trims chatter; **`new -A`** is idempotent.
+- **Omitted session names** use the sole scoped session, or `fzf` when multiple sessions are
+  available. `cat`, `tail`, and `rm` use `fzf --multi`.
 - **Bracketed paste** means a pasted prompt with `/slash` commands and newlines reaches a TUI
   exactly as written.
 
@@ -204,9 +206,9 @@ See [`docs/sf-auto-mux.md`](docs/sf-auto-mux.md) for an annotated before/after.
   (existence checks) use tmux's `=name` form, the rest use the plain name (which exact-matches
   an existing session).
 - **Tags as user-options.** `@tpp`, `@tpp_scope`, `@tpp_dir`, `@tpp_cmd`, `@tpp_created` live on
-  the session and are read back in one `list-sessions -F` call.
+  the session and are read back in one `list-sessions -F` call. `ls` shows every `@tpp` session.
 - **remain-on-exit** keeps a finished command's last screen so `cat`/`tail` still work; `exit`
-  / `rm --record` snapshot it to `~/.local/state/tpp/exited/<name>.{json,log}` before killing.
+  / `rm --record` snapshot it under `~/.local/state/tpp/exited/<socket>/` before killing.
 
 ## Related tools
 
