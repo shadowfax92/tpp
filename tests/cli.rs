@@ -61,6 +61,16 @@ fn assert_success(out: &Output) {
     );
 }
 
+fn tmux_available() -> bool {
+    Command::new("tmux")
+        .arg("-V")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 #[test]
 fn bare_invocation_has_no_subcommand() {
     assert!(parse(&[]).cmd.is_none());
@@ -151,6 +161,10 @@ fn tail_help_uses_global_default_wording() {
 
 #[test]
 fn rm_without_names_uses_global_picker_candidates() {
+    if !tmux_available() {
+        return;
+    }
+
     let server = TmuxServer::new();
     let tmp = tempfile::tempdir().unwrap();
     let fake_bin = tmp.path().join("bin");
