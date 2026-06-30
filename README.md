@@ -96,7 +96,7 @@ Run `tpp <cmd> --help` for full flags. Aliases in parentheses.
 **Input**
 | Command | Does |
 |---|---|
-| `send` (`s`) | Send to a session: literal `TEXT`, `--file`/`--stdin`, or `--keys` (tmux key names like `Enter`, `C-c`). No `-t` → sole session, or an `fzf` picker. `-e`/`--enter` appends Enter and works after text (`tpp send "rs" -e`). Use `--` before literal option-looking text. |
+| `send` (`s`) | Send to a session: literal `TEXT`, `--file`/`--stdin`, or `--keys` (tmux key names like `Enter`, `C-c`). No `-t` → sole session, or an `fzf` picker. `-e`/`--enter` appends Enter and works after text (`tpp send -t api "rs" -e`). Use `--` before literal option-looking text. |
 | `paste` | Bracketed paste + Enter (sugar over `send --paste --enter`). No `-t` → sole session, or an `fzf` picker. `--no-enter` to skip submit. |
 
 **Meta**: `config` (`path`/`show`/`edit`/`init`), `init`, `doctor`, `completions <shell>`.

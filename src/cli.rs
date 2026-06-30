@@ -61,7 +61,7 @@ pub enum Cmd {
     #[command(visible_alias = "a")]
     Attach(AttachArgs),
 
-    /// Send text or keys to a session.
+    /// Send typed text (optionally Enter) or keys to a session.
     #[command(visible_alias = "s")]
     Send(SendArgs),
 
