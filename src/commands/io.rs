@@ -130,43 +130,90 @@ struct CatJson {
     output: String,
 }
 
+struct CatTarget {
+    resolved: String,
+    raw: Option<String>,
+}
+
 pub fn cat(ctx: &Ctx, args: CatArgs) -> Result<()> {
-    let targets = select::many(ctx, &args.sessions, "print")?;
+    let targets: Vec<CatTarget> = if args.sessions.is_empty() {
+        vec![CatTarget {
+            resolved: select::one(ctx, None, "print")?,
+            raw: None,
+        }]
+    } else {
+        args.sessions
+            .iter()
+            .map(|name| CatTarget {
+                resolved: session::resolve_existing_name(&ctx.tmux, &ctx.cfg, name),
+                raw: Some(tgt(name)),
+            })
+            .collect()
+    };
     let lines = args.lines.unwrap_or(ctx.cfg.capture.lines);
     let store_socket = ctx.tmux.store_socket();
     let store = Store::new(&ctx.paths, store_socket.as_deref());
     let multi = targets.len() > 1;
     let mut json_items = Vec::new();
 
-    for name in &targets {
-        let (status, output) = if session::exists(&ctx.tmux, name) {
-            let raw = capture(&ctx.tmux, name, Some(lines), args.escape, args.all_history)?;
+    for target in &targets {
+        let mut display_name = target.resolved.as_str();
+        let (status, output) = if session::exists(&ctx.tmux, &target.resolved) {
+            let raw = capture(
+                &ctx.tmux,
+                &target.resolved,
+                Some(lines),
+                args.escape,
+                args.all_history,
+            )?;
             let trimmed = trim_trailing_blank(&raw);
             let out = if args.all_history {
                 trimmed
             } else {
                 last_lines(&trimmed, lines as usize)
             };
-            let status = if pane_dead(&ctx.tmux, name) {
+            let status = if pane_dead(&ctx.tmux, &target.resolved) {
                 "exited"
             } else {
                 "running"
             };
             (status.to_string(), out)
-        } else if let Some(log) = store.read_log(name)? {
+        } else if let Some(log) = store.read_log(&target.resolved)? {
             let out = if args.all_history {
                 log
             } else {
                 last_lines(&log, lines as usize)
             };
             ("exited".to_string(), trim_trailing_blank(&out))
+        } else if let Some(raw_name) = target
+            .raw
+            .as_ref()
+            .filter(|raw_name| *raw_name != &target.resolved)
+        {
+            if let Some(log) = store.read_log(raw_name)? {
+                display_name = raw_name;
+                let out = if args.all_history {
+                    log
+                } else {
+                    last_lines(&log, lines as usize)
+                };
+                ("exited".to_string(), trim_trailing_blank(&out))
+            } else {
+                die(
+                    code::NOT_FOUND,
+                    format!("no such session: {}", target.resolved),
+                );
+            }
         } else {
-            die(code::NOT_FOUND, format!("no such session: {name}"));
+            die(
+                code::NOT_FOUND,
+                format!("no such session: {}", target.resolved),
+            );
         };
 
         if ctx.json {
             json_items.push(CatJson {
-                session: name.clone(),
+                session: display_name.to_string(),
                 status,
                 output,
             });
@@ -174,7 +221,7 @@ pub fn cat(ctx: &Ctx, args: CatArgs) -> Result<()> {
             if multi {
                 println!(
                     "{}",
-                    paint(&format!("== {name} [{status}] =="), Style::Cyan)
+                    paint(&format!("== {display_name} [{status}] =="), Style::Cyan)
                 );
             }
             println!("{output}");

@@ -39,7 +39,7 @@ pub fn die(code: i32, msg: impl AsRef<str>) -> ! {
 /// none, fall back to the sole session in the current scope, else fail helpfully.
 pub fn resolve_one_target(ctx: &Ctx, explicit: Option<&str>) -> String {
     if let Some(name) = explicit {
-        return name.trim().trim_start_matches('=').to_string();
+        return session::resolve_existing_name(&ctx.tmux, &ctx.cfg, name);
     }
     let sessions = session::list(&ctx.tmux, ctx.scope.as_deref()).unwrap_or_default();
     match sessions.len() {
@@ -146,4 +146,53 @@ pub fn find_session(tmux: &Tmux, name: &str) -> Option<SessionInfo> {
         .unwrap_or_default()
         .into_iter()
         .find(|s| s.name == name)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::{resolve_one_target, Ctx};
+    use crate::config::Config;
+    use crate::paths::Paths;
+    use crate::tmux::Tmux;
+
+    fn ctx_with_prefix(prefix: &str) -> Ctx {
+        Ctx {
+            tmux: Tmux::new(Some(format!("tpp-test-{}", std::process::id()))),
+            cfg: Config {
+                session_prefix: prefix.to_string(),
+                ..Config::default()
+            },
+            paths: Paths {
+                config_dir: PathBuf::new(),
+                state_dir: PathBuf::new(),
+            },
+            config_path: PathBuf::new(),
+            scope: None,
+            json: false,
+            quiet: true,
+        }
+    }
+
+    #[test]
+    fn explicit_target_applies_session_prefix() {
+        assert_eq!(
+            resolve_one_target(&ctx_with_prefix("tpp/"), Some("api")),
+            "tpp/api"
+        );
+    }
+
+    #[test]
+    fn explicit_target_does_not_double_prefix() {
+        assert_eq!(
+            resolve_one_target(&ctx_with_prefix("tpp/"), Some("tpp/api")),
+            "tpp/api"
+        );
+    }
+
+    #[test]
+    fn explicit_target_respects_empty_prefix() {
+        assert_eq!(resolve_one_target(&ctx_with_prefix(""), Some("api")), "api");
+    }
 }

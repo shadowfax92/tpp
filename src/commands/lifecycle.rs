@@ -43,8 +43,9 @@ fn slug(s: &str) -> String {
 
 /// Pick an unused session name from a base, appending -2, -3, … on collision.
 fn unique_name(ctx: &Ctx, base: &str) -> String {
-    if !session::exists(&ctx.tmux, base) {
-        return base.to_string();
+    let base = session::prefixed_name(&ctx.cfg, base);
+    if !session::exists(&ctx.tmux, &base) {
+        return base;
     }
     for n in 2.. {
         let candidate = format!("{base}-{n}");
@@ -72,10 +73,11 @@ pub fn run(ctx: &Ctx, args: RunArgs) -> Result<()> {
     let dir = args.dir.clone().or_else(cwd_string);
     let name = match &args.name {
         Some(n) => {
-            if session::exists(&ctx.tmux, n) {
+            let name = session::prefixed_name(&ctx.cfg, n);
+            if session::exists(&ctx.tmux, &name) {
                 die(1, format!("session already exists: {n}"));
             }
-            n.clone()
+            name
         }
         None => auto_name_for_command(ctx, &args.command),
     };
@@ -115,7 +117,7 @@ pub fn run(ctx: &Ctx, args: RunArgs) -> Result<()> {
 
 pub fn new(ctx: &Ctx, args: NewArgs) -> Result<()> {
     let name = match &args.name {
-        Some(n) => n.clone(),
+        Some(n) => session::prefixed_name(&ctx.cfg, n),
         None => {
             let base = cwd_string()
                 .as_deref()
@@ -367,6 +369,7 @@ pub fn has(ctx: &Ctx, args: HasArgs) -> Result<()> {
         Some(n) => n,
         None => die(2, "usage: tpp has <session>"),
     };
+    let name = session::resolve_existing_name(&ctx.tmux, &ctx.cfg, &name);
     std::process::exit(if session::exists(&ctx.tmux, &name) {
         0
     } else {
@@ -376,8 +379,14 @@ pub fn has(ctx: &Ctx, args: HasArgs) -> Result<()> {
 
 pub fn rename(ctx: &Ctx, args: RenameArgs) -> Result<()> {
     let (session_name, new_name) = match args.names.as_slice() {
-        [session_name, new_name] => (select::normalize_explicit(session_name), new_name.clone()),
-        [new_name] => (select::one(ctx, None, "rename")?, new_name.clone()),
+        [session_name, new_name] => (
+            session::resolve_existing_name(&ctx.tmux, &ctx.cfg, session_name),
+            session::prefixed_name(&ctx.cfg, new_name),
+        ),
+        [new_name] => (
+            select::one(ctx, None, "rename")?,
+            session::prefixed_name(&ctx.cfg, new_name),
+        ),
         _ => die(2, "usage: tpp rename [SESSION] <NEW_NAME>"),
     };
 

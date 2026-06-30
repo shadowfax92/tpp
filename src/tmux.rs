@@ -279,7 +279,9 @@ fn normalize_socket_path(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{named_socket_store_key, socket_store_key, tmux_env_socket, tmux_named_socket_path};
+    use super::{
+        named_socket_store_key, socket_store_key, tmux_env_socket, tmux_named_socket_path,
+    };
 
     #[test]
     fn tmux_env_socket_parses_socket_path() {

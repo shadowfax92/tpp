@@ -33,7 +33,7 @@ pub fn parse_fzf_output(output: &str) -> Vec<String> {
 
 pub fn one(ctx: &Ctx, explicit: Option<&str>, action: &str) -> Result<String> {
     if let Some(name) = explicit {
-        return Ok(normalize_explicit(name));
+        return Ok(session::resolve_existing_name(&ctx.tmux, &ctx.cfg, name));
     }
     let picks = from_scope(ctx, SelectionMode::Single, action)?;
     picks
@@ -44,7 +44,10 @@ pub fn one(ctx: &Ctx, explicit: Option<&str>, action: &str) -> Result<String> {
 
 pub fn many(ctx: &Ctx, explicit: &[String], action: &str) -> Result<Vec<String>> {
     if !explicit.is_empty() {
-        return Ok(normalize_explicit_many(explicit));
+        return Ok(explicit
+            .iter()
+            .map(|name| session::resolve_existing_name(&ctx.tmux, &ctx.cfg, name))
+            .collect());
     }
     from_scope(ctx, SelectionMode::Multi, action)
 }

@@ -56,6 +56,71 @@ pub fn exists(tmux: &Tmux, name: &str) -> bool {
     tmux.ok(["has-session", "-t", &exact(name)])
 }
 
+fn safe_session_name(name: &str) -> String {
+    name.chars()
+        .map(|c| if matches!(c, ':' | '.') { '_' } else { c })
+        .collect()
+}
+
+/// Apply the configured tpp session prefix to a session name, unless already present.
+pub fn prefixed_name(cfg: &Config, name: &str) -> String {
+    let name = tgt(name);
+    let prefix = cfg.session_prefix.as_str();
+    let safe_prefix = safe_session_name(prefix);
+    let already_prefixed =
+        !prefix.is_empty() && (name.starts_with(prefix) || name.starts_with(&safe_prefix));
+    let prefixed = if prefix.is_empty() || already_prefixed {
+        name
+    } else {
+        format!("{prefix}{name}")
+    };
+    safe_session_name(&prefixed)
+}
+
+/// Apply the configured prefix to the session component of a tmux target.
+pub fn prefixed_target(cfg: &Config, target: &str) -> String {
+    let target = target.trim();
+    let exact = target.starts_with('=');
+    let raw = target.trim_start_matches('=');
+    if raw.starts_with(['%', '@', '$', '{', '!']) {
+        return target.to_string();
+    }
+    let safe_prefix = safe_session_name(&cfg.session_prefix);
+    let search_start = if !cfg.session_prefix.is_empty() && raw.starts_with(&cfg.session_prefix) {
+        cfg.session_prefix.len()
+    } else if !safe_prefix.is_empty() && raw.starts_with(&safe_prefix) {
+        safe_prefix.len()
+    } else {
+        0
+    };
+    let split_at = raw[search_start..]
+        .find([':', '.'])
+        .map(|i| search_start + i)
+        .unwrap_or(raw.len());
+    let (session, suffix) = raw.split_at(split_at);
+    if session.is_empty() {
+        return target.to_string();
+    }
+
+    let marker = if exact { "=" } else { "" };
+    format!("{marker}{}{}", prefixed_name(cfg, session), suffix)
+}
+
+/// Resolve a user-supplied logical name to an existing prefixed session when possible.
+pub fn resolve_existing_name(tmux: &Tmux, cfg: &Config, name: &str) -> String {
+    let prefixed = prefixed_name(cfg, name);
+    if exists(tmux, &prefixed) {
+        return prefixed;
+    }
+
+    let raw = tgt(name);
+    if raw != prefixed && exists(tmux, &raw) {
+        raw
+    } else {
+        prefixed
+    }
+}
+
 /// List tpp-managed sessions. When `scope` is `Some`, only sessions stamped with that scope
 /// are returned; `None` returns every tpp session. Non-tpp tmux sessions are always excluded.
 pub fn list(tmux: &Tmux, scope: Option<&str>) -> Result<Vec<SessionInfo>> {
@@ -199,4 +264,73 @@ pub fn create(tmux: &Tmux, cfg: &Config, opts: NewOpts) -> Result<String> {
 
 fn set_opt(tmux: &Tmux, target: &str, key: &str, value: &str) {
     let _ = tmux.run(["set-option", "-t", target, key, value]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{prefixed_name, prefixed_target};
+    use crate::config::Config;
+
+    fn cfg(prefix: &str) -> Config {
+        Config {
+            session_prefix: prefix.to_string(),
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn prefixed_name_adds_default_prefix() {
+        assert_eq!(prefixed_name(&Config::default(), "api"), "tpp/api");
+    }
+
+    #[test]
+    fn prefixed_name_does_not_double_prefix() {
+        assert_eq!(prefixed_name(&Config::default(), "tpp/api"), "tpp/api");
+    }
+
+    #[test]
+    fn prefixed_name_allows_empty_prefix() {
+        assert_eq!(prefixed_name(&cfg(""), "api"), "api");
+    }
+
+    #[test]
+    fn prefixed_name_normalizes_tmux_target_separators() {
+        assert_eq!(prefixed_name(&cfg("team."), "api"), "team_api");
+        assert_eq!(prefixed_name(&cfg("team:"), "api"), "team_api");
+    }
+
+    #[test]
+    fn prefixed_name_recognizes_safe_prefix() {
+        assert_eq!(prefixed_name(&cfg("team."), "team_api"), "team_api");
+    }
+
+    #[test]
+    fn prefixed_target_preserves_window_and_pane_suffix() {
+        assert_eq!(
+            prefixed_target(&Config::default(), "api:1.2"),
+            "tpp/api:1.2"
+        );
+    }
+
+    #[test]
+    fn prefixed_target_keeps_exact_marker() {
+        assert_eq!(prefixed_target(&Config::default(), "=api"), "=tpp/api");
+    }
+
+    #[test]
+    fn prefixed_target_leaves_tmux_ids_unchanged() {
+        assert_eq!(prefixed_target(&Config::default(), "%0"), "%0");
+        assert_eq!(prefixed_target(&Config::default(), "@1"), "@1");
+        assert_eq!(prefixed_target(&Config::default(), "$2"), "$2");
+        assert_eq!(prefixed_target(&Config::default(), "=%0"), "=%0");
+    }
+
+    #[test]
+    fn prefixed_target_does_not_double_prefix_with_dot_prefix() {
+        let cfg = cfg("team.");
+
+        assert_eq!(prefixed_target(&cfg, "api:0"), "team_api:0");
+        assert_eq!(prefixed_target(&cfg, "team.api:0"), "team_api:0");
+        assert_eq!(prefixed_target(&cfg, "team_api:0"), "team_api:0");
+    }
 }
