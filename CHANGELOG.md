@@ -15,9 +15,9 @@ agents.
   recorded exited sessions.
 - **Input:** `send` (`s`) and `paste` — literal text, `--file`/`--stdin`, `--keys`, and
   bracketed paste for verbatim multi-line content; `--enter` to submit.
-- **Directory scope:** sessions are tagged (tmux session user-options) with the directory they
-  were created in (git root by default); `ls` filters by scope so sessions are "shared in a
-  directory". `[scope] mode = git|cwd|none`, `--scope`.
+- **Universal listing with scope tags:** sessions are tagged (tmux session user-options) with
+  the directory they were created in (git root by default); `ls` shows all `tpp` sessions while
+  omitted-target commands can still use scope. `[scope] mode = git|cwd|none`, `--scope`.
 - **Agent ergonomics:** `run` prints only the session name; stable exit codes (`3` not found,
   `4` timeout); `run --wait` streams to completion and exits with the command's status; `wait`
   on text / idle / pane-exit.

@@ -42,7 +42,7 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     pub config: Option<PathBuf>,
 
-    /// Defaults to `ls` (sessions in the current scope) when omitted.
+    /// Defaults to `ls` (all tpp sessions) when omitted.
     #[command(subcommand)]
     pub cmd: Option<Cmd>,
 }
@@ -57,7 +57,7 @@ pub enum Cmd {
     #[command(visible_alias = "n")]
     New(NewArgs),
 
-    /// List sessions in the current scope.
+    /// List all tpp sessions.
     #[command(visible_aliases = ["l", "list"])]
     Ls(LsArgs),
 
@@ -177,7 +177,7 @@ pub struct NewArgs {
 
 #[derive(Args, Debug, Default)]
 pub struct LsArgs {
-    /// Show all tpp sessions, not just the current scope.
+    /// Accepted for compatibility; `ls` already shows all tpp sessions.
     #[arg(short = 'a', long)]
     pub all: bool,
     /// Include recently exited sessions.

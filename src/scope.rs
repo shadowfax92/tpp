@@ -1,9 +1,9 @@
 //! Scope resolution — the "directory" a session is shared within.
 //!
-//! A scope is just an absolute path string stamped onto each session. `ls` filters by it
-//! so everyone working in the same directory sees the same sessions. `git` mode resolves to
-//! the worktree/repo root (so a grove worktree is its own scope); `cwd` is the literal
-//! directory; `none` disables scoping entirely.
+//! A scope is just an absolute path string stamped onto each session. `ls` is universal, but
+//! scoped target selection can still use this tag when a command omits its target. `git` mode
+//! resolves to the worktree/repo root (so a grove worktree is its own scope); `cwd` is the
+//! literal directory; `none` disables scoping entirely.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
