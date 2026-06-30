@@ -61,6 +61,21 @@ fn assert_success(out: &Output) {
     );
 }
 
+fn assert_not_found(out: &Output, session: &str) {
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains(&format!("No such session {session}")),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 fn tmux_available() -> bool {
     Command::new("tmux")
         .arg("-V")
@@ -260,6 +275,85 @@ fn rm_without_names_uses_global_picker_candidates() {
     let after = run_tpp(&server, tmp.path(), &["-q", "ls"]);
     assert_success(&after);
     assert!(String::from_utf8_lossy(&after.stdout).trim().is_empty());
+}
+
+#[test]
+fn cat_resolves_unprefixed_live_session_name() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "run",
+            "-s",
+            "codex/live",
+            "--",
+            "sh",
+            "-c",
+            "printf live-output; sleep 2",
+        ],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["wait", "-t", "codex/live", "--text", "live-output"],
+    ));
+
+    let cat = run_tpp(&server, tmp.path(), &["cat", "codex/live"]);
+    assert_success(&cat);
+    assert!(String::from_utf8_lossy(&cat.stdout).contains("live-output"));
+}
+
+#[test]
+fn cat_resolves_unprefixed_recorded_session_name() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "run",
+            "-s",
+            "codex/recorded",
+            "--wait",
+            "--record",
+            "--",
+            "sh",
+            "-c",
+            "printf recorded-output",
+        ],
+    ));
+
+    let cat = run_tpp(&server, tmp.path(), &["cat", "codex/recorded"]);
+    assert_success(&cat);
+    assert!(String::from_utf8_lossy(&cat.stdout).contains("recorded-output"));
+}
+
+#[test]
+fn missing_explicit_targets_report_not_found() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    for args in [
+        &["cat", "codex/missing"][..],
+        &["tail", "codex/missing"][..],
+        &["exit", "codex/missing"][..],
+    ] {
+        let out = run_tpp(&server, tmp.path(), args);
+        assert_not_found(&out, "tpp/codex/missing");
+    }
 }
 
 #[test]

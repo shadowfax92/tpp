@@ -9,7 +9,8 @@ use serde::Serialize;
 
 use crate::cli::{CatArgs, PasteArgs, SendArgs, TailArgs, WaitArgs};
 use crate::commands::{
-    capture, code, die, last_lines, pane_dead, pane_dead_status, select, trim_trailing_blank, Ctx,
+    capture, code, last_lines, no_such_session, pane_dead, pane_dead_status, select,
+    trim_trailing_blank, Ctx,
 };
 use crate::output::{paint, print_json, Style};
 use crate::session;
@@ -77,7 +78,7 @@ fn deliver(
 pub fn send(ctx: &Ctx, args: SendArgs) -> Result<()> {
     let target = select::one(ctx, args.target.as_deref(), "send to")?;
     if !session::exists(&ctx.tmux, &target) {
-        die(code::NOT_FOUND, format!("no such session: {target}"));
+        no_such_session(&target);
     }
     let body = if args.keys {
         String::new()
@@ -104,7 +105,7 @@ pub fn send(ctx: &Ctx, args: SendArgs) -> Result<()> {
 pub fn paste(ctx: &Ctx, args: PasteArgs) -> Result<()> {
     let target = select::one(ctx, args.target.as_deref(), "paste into")?;
     if !session::exists(&ctx.tmux, &target) {
-        die(code::NOT_FOUND, format!("no such session: {target}"));
+        no_such_session(&target);
     }
     let body = body_text(args.file.as_deref(), args.stdin, &args.text)?;
     deliver(
@@ -199,16 +200,10 @@ pub fn cat(ctx: &Ctx, args: CatArgs) -> Result<()> {
                 };
                 ("exited".to_string(), trim_trailing_blank(&out))
             } else {
-                die(
-                    code::NOT_FOUND,
-                    format!("no such session: {}", target.resolved),
-                );
+                no_such_session(&target.resolved);
             }
         } else {
-            die(
-                code::NOT_FOUND,
-                format!("no such session: {}", target.resolved),
-            );
+            no_such_session(&target.resolved);
         };
 
         if ctx.json {
@@ -270,6 +265,11 @@ fn appended<'a>(prev: &str, cur: &'a str) -> &'a str {
 /// when all targets are gone or dead.
 pub fn tail(ctx: &Ctx, args: TailArgs) -> Result<()> {
     let targets = select::many(ctx, &args.sessions, "tail")?;
+    for name in &targets {
+        if !session::exists(&ctx.tmux, name) {
+            no_such_session(name);
+        }
+    }
     let interval = Duration::from_millis(args.interval.unwrap_or(ctx.cfg.tail.interval_ms).max(50));
     let window: u32 = 500;
     let multi = targets.len() > 1;
@@ -338,7 +338,7 @@ struct WaitJson {
 pub fn wait(ctx: &Ctx, args: WaitArgs) -> Result<()> {
     let target = select::one(ctx, args.target.as_deref(), "wait on")?;
     if !session::exists(&ctx.tmux, &target) {
-        die(code::NOT_FOUND, format!("no such session: {target}"));
+        no_such_session(&target);
     }
     let stable_for =
         Duration::from_millis(args.stable_for.unwrap_or(ctx.cfg.wait.stable_for_ms).max(1));
