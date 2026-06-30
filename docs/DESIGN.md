@@ -12,9 +12,9 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
 
 ## The four core capabilities
 
-1. **List sessions universally.** Every `tpp`-created session is tagged (via tmux
+1. **List sessions globally.** Every `tpp`-created session is tagged (via tmux
    session user-options), and `tpp ls` shows every tagged session on the selected tmux
-   socket. Scope tags still exist for commands that need a scoped default target.
+   socket. Omitted-target commands use that same global set.
 2. **Run a command.** `tpp run -- <cmd>` creates a detached session running `<cmd>` and
    prints its name (capture it: `s=$(tpp run -- npm test)`). `--wait` blocks until the
    command exits and streams/returns its output + exit status.
@@ -27,10 +27,9 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
 
 ## Model
 
-- **Scope** = `git rev-parse --show-toplevel` of the cwd, else the cwd. Override with
-  `--scope <dir>` / `--scope none`, or change the default in config (`[scope] mode`).
-  `ls` is universal; scoped target selection remains for commands where the target is omitted.
-- **Tags** live on the tmux session as user-options: `@tpp=1`, `@tpp_scope`, `@tpp_dir`,
+- **Global session set.** Every human-facing command operates on all `tpp` sessions in the
+  selected tmux socket. If a target is omitted, tpp picks the sole session or invokes `fzf`.
+- **Tags** live on the tmux session as user-options: `@tpp=1`, `@tpp_dir`,
   `@tpp_cmd`, `@tpp_created`. No external index needed for discovery — tmux is the source
   of truth. `ls` reads them back with a single `list-sessions -F` call.
 - **remain-on-exit** is set on every `tpp` session so a finished command leaves its output
@@ -57,15 +56,14 @@ flags the scripts use onto the same internals (or forward straight to `tmux`).
 - `run` prints **only** the session name to stdout; everything else goes to stderr.
 - Stable exit codes: `0` ok · `2` usage · `3` not found · `4` timeout · `1` other.
 - `-q/--quiet`, idempotent `new -A` (no-op/attach if exists), `has` is exit-code-only.
-- Human-facing omitted-session commands select the sole scoped session automatically, or use
-  external `fzf` when multiple sessions are available. Multi-target commands (`cat`, `tail`,
-  `rm`) invoke `fzf --multi`.
+- Human-facing omitted-session commands select the sole global session automatically, or use
+  external `fzf` when multiple sessions are available. `tail` and `rm` invoke `fzf --multi`.
 
 ## Config
 
 `~/.config/tpp/config.toml` (override dir with `$TPP_CONFIG_DIR`). State under
 `~/.local/state/tpp/` (`$TPP_STATE_DIR`). `tpp init` writes a starter config; `tpp doctor`
-checks tmux + prints resolved paths/scope. See `tpp config path|show|edit`.
+checks tmux + prints resolved paths. See `tpp config path|show|edit`.
 
 ## Non-goals (v1)
 

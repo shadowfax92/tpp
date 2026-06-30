@@ -8,7 +8,6 @@ use serde::Serialize;
 use crate::cli::{AttachArgs, ExitArgs, HasArgs, LsArgs, NewArgs, RenameArgs, RmArgs, RunArgs};
 use crate::commands::io::{record_session, run_wait};
 use crate::commands::{code, current_session, die, select, Ctx};
-use crate::config::LsDefault;
 use crate::output::{paint, print_json, Style};
 use crate::session::{self, now_epoch, NewOpts};
 use crate::store::Store;
@@ -89,7 +88,6 @@ pub fn run(ctx: &Ctx, args: RunArgs) -> Result<()> {
             name: name.clone(),
             dir,
             command: args.command.clone(),
-            scope: ctx.scope.as_deref(),
             width: None,
             height: None,
         },
@@ -143,7 +141,6 @@ pub fn new(ctx: &Ctx, args: NewArgs) -> Result<()> {
             name: name.clone(),
             dir,
             command: args.command.clone(),
-            scope: ctx.scope.as_deref(),
             width: None,
             height: None,
         },
@@ -160,7 +157,6 @@ pub fn new(ctx: &Ctx, args: NewArgs) -> Result<()> {
 struct LsRow {
     name: String,
     status: String,
-    scope: String,
     dir: String,
     command: String,
     age: String,
@@ -179,18 +175,8 @@ fn humanize_age(secs: i64) -> String {
     }
 }
 
-fn ls_scope_filter<'a>(
-    _args: &LsArgs,
-    _default: LsDefault,
-    _current_scope: Option<&'a str>,
-) -> Option<&'a str> {
-    None
-}
-
 pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
-    let scope_filter = ls_scope_filter(&args, ctx.cfg.ls.default, ctx.scope.as_deref());
-
-    let live = session::list(&ctx.tmux, scope_filter)?;
+    let live = session::list(&ctx.tmux)?;
     let now = now_epoch();
 
     let mut rows: Vec<LsRow> = live
@@ -198,7 +184,6 @@ pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
         .map(|s| LsRow {
             name: s.name.clone(),
             status: s.status().to_string(),
-            scope: s.scope.clone(),
             dir: s.dir.clone(),
             command: s.command.clone(),
             age: humanize_age(now - s.created),
@@ -220,15 +205,9 @@ pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
             if live_names.contains(rec.name.as_str()) {
                 continue;
             }
-            if let Some(scope) = scope_filter {
-                if rec.scope != scope {
-                    continue;
-                }
-            }
             rows.push(LsRow {
                 name: rec.name,
                 status: "recorded".to_string(),
-                scope: rec.scope,
                 dir: rec.dir,
                 command: rec.command,
                 age: humanize_age(now - rec.exited_at),
@@ -246,12 +225,7 @@ pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
         return Ok(());
     }
     if rows.is_empty() {
-        let where_ = if let Some(scope) = scope_filter {
-            format!(" in {}", crate::scope::label(scope))
-        } else {
-            String::new()
-        };
-        eprintln!("no tpp sessions{where_}");
+        eprintln!("no tpp sessions");
         return Ok(());
     }
 
@@ -301,7 +275,7 @@ pub fn attach(ctx: &Ctx, args: AttachArgs) -> Result<()> {
 
 pub fn rm(ctx: &Ctx, args: RmArgs) -> Result<()> {
     let targets: Vec<String> = if args.all {
-        session::list(&ctx.tmux, ctx.scope.as_deref())?
+        session::list(&ctx.tmux)?
             .into_iter()
             .map(|s| s.name)
             .collect()
@@ -403,9 +377,7 @@ pub fn rename(ctx: &Ctx, args: RenameArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{humanize_age, ls_scope_filter, slug};
-    use crate::cli::LsArgs;
-    use crate::config::LsDefault;
+    use super::{humanize_age, slug};
 
     #[test]
     fn slug_sanitizes() {
@@ -421,30 +393,5 @@ mod tests {
         assert_eq!(humanize_age(120), "2m");
         assert_eq!(humanize_age(7200), "2h");
         assert_eq!(humanize_age(172_800), "2d");
-    }
-
-    #[test]
-    fn ls_scope_filter_is_universal() {
-        let scope = Some("/tmp/worktree");
-
-        assert_eq!(
-            ls_scope_filter(&LsArgs::default(), LsDefault::Scope, scope),
-            None
-        );
-        assert_eq!(
-            ls_scope_filter(&LsArgs::default(), LsDefault::All, scope),
-            None
-        );
-        assert_eq!(
-            ls_scope_filter(
-                &LsArgs {
-                    all: true,
-                    ..LsArgs::default()
-                },
-                LsDefault::Scope,
-                scope,
-            ),
-            None
-        );
     }
 }

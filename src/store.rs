@@ -15,7 +15,6 @@ use crate::session::now_epoch;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExitedRecord {
     pub name: String,
-    pub scope: String,
     pub dir: String,
     pub command: String,
     pub exited_at: i64,
@@ -249,7 +248,6 @@ mod tests {
     fn record(name: &str, command: &str, exited_at: i64) -> ExitedRecord {
         ExitedRecord {
             name: name.to_string(),
-            scope: String::new(),
             dir: String::new(),
             command: command.to_string(),
             exited_at,

@@ -6,7 +6,6 @@ pub mod commands;
 pub mod config;
 pub mod output;
 pub mod paths;
-pub mod scope;
 pub mod session;
 pub mod store;
 pub mod tmux;
@@ -21,7 +20,7 @@ use paths::Paths;
 use store::Store;
 use tmux::Tmux;
 
-/// Parse args, build the shared context (tmux socket, config, scope), and dispatch.
+/// Parse args, build the shared context, and dispatch.
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
 
@@ -32,7 +31,6 @@ pub fn run() -> Result<()> {
     // CLI flag wins over config for the socket; empty falls back to the shared tmux server.
     let socket = cli.socket.clone().or_else(|| cfg.socket.clone());
     let tmux = Tmux::new(socket);
-    let scope = scope::resolve(cfg.scope.mode, cli.scope.as_deref())?;
 
     // Forget stale exited records (best-effort; never fails a command).
     let store_socket = tmux.store_socket();
@@ -43,7 +41,6 @@ pub fn run() -> Result<()> {
         cfg,
         paths,
         config_path,
-        scope,
         json: cli.json,
         quiet: cli.quiet,
     };

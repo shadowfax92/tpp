@@ -467,10 +467,6 @@ pub fn record_session(ctx: &Ctx, name: &str) -> Result<()> {
     .unwrap_or_default();
     let rec = crate::store::ExitedRecord {
         name: name.to_string(),
-        scope: info
-            .as_ref()
-            .map(|i| i.scope.clone())
-            .unwrap_or_else(|| ctx.scope.clone().unwrap_or_default()),
         dir: info.as_ref().map(|i| i.dir.clone()).unwrap_or_default(),
         command: info.as_ref().map(|i| i.command.clone()).unwrap_or_default(),
         exited_at: session::now_epoch(),

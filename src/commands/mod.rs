@@ -11,14 +11,12 @@ use crate::paths::Paths;
 use crate::session::{self, SessionInfo};
 use crate::tmux::{tgt, Tmux, TmuxError};
 
-/// Everything a command needs: the tmux wrapper, loaded config, resolved paths, the active
-/// scope (None = unscoped), and the global output flags.
+/// Everything a command needs: tmux access, loaded config, resolved paths, and output flags.
 pub struct Ctx {
     pub tmux: Tmux,
     pub cfg: Config,
     pub paths: Paths,
     pub config_path: std::path::PathBuf,
-    pub scope: Option<String>,
     pub json: bool,
     pub quiet: bool,
 }
@@ -35,25 +33,24 @@ pub fn die(code: i32, msg: impl AsRef<str>) -> ! {
     std::process::exit(code);
 }
 
-/// Resolve the session a single-target command should act on. An explicit name wins; with
-/// none, fall back to the sole session in the current scope, else fail helpfully.
+/// Resolve the session a single-target command should act on.
 pub fn resolve_one_target(ctx: &Ctx, explicit: Option<&str>) -> String {
     if let Some(name) = explicit {
         return session::resolve_existing_name(&ctx.tmux, &ctx.cfg, name);
     }
-    let sessions = session::list(&ctx.tmux, ctx.scope.as_deref()).unwrap_or_default();
+    let sessions = session::list(&ctx.tmux).unwrap_or_default();
     match sessions.len() {
         1 => sessions[0].name.clone(),
         0 => die(
             code::NOT_FOUND,
-            "no sessions in scope — name one explicitly (-t NAME)",
+            "no sessions — name one explicitly (-t NAME)",
         ),
         _ => {
             let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
             die(
                 code::NOT_FOUND,
                 format!(
-                    "multiple sessions in scope — name one (-t NAME): {}",
+                    "multiple sessions — name one (-t NAME): {}",
                     names.join(", ")
                 ),
             )
@@ -142,7 +139,7 @@ pub fn current_session(tmux: &Tmux) -> Option<String> {
 
 /// Look up a session's metadata in the current tmux server by exact name.
 pub fn find_session(tmux: &Tmux, name: &str) -> Option<SessionInfo> {
-    session::list(tmux, None)
+    session::list(tmux)
         .unwrap_or_default()
         .into_iter()
         .find(|s| s.name == name)
@@ -169,7 +166,6 @@ mod tests {
                 state_dir: PathBuf::new(),
             },
             config_path: PathBuf::new(),
-            scope: None,
             json: false,
             quiet: true,
         }
