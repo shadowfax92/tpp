@@ -219,11 +219,7 @@ pub struct SendArgs {
     #[arg(short = 'e', long)]
     pub enter: bool,
     /// Text to send (literal unless --keys).
-    #[arg(
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        value_name = "TEXT"
-    )]
+    #[arg(value_name = "TEXT")]
     pub text: Vec<String>,
 }
 
@@ -242,11 +238,7 @@ pub struct PasteArgs {
     #[arg(long)]
     pub no_enter: bool,
     /// Text to paste.
-    #[arg(
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        value_name = "TEXT"
-    )]
+    #[arg(value_name = "TEXT")]
     pub text: Vec<String>,
 }
 
