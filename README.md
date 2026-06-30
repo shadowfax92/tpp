@@ -56,7 +56,7 @@ tpp new -s api -- npm run dev # named detached session running a command
 tpp attach api               # attach (switch-client if you're already in tmux)
 tpp cat api                  # print its recent output
 tpp tail api                 # follow it live
-tpp send -t api --enter -- "rs"   # type "rs" + Enter into it
+tpp send -t api "rs" -e      # type "rs" + Enter into it
 tpp rm api                   # kill it
 
 # Agents
@@ -96,7 +96,7 @@ Run `tpp <cmd> --help` for full flags. Aliases in parentheses.
 **Input**
 | Command | Does |
 |---|---|
-| `send` (`s`) | Send to a session: literal `TEXT`, `--file`/`--stdin`, or `--keys` (tmux key names like `Enter`, `C-c`). No `-t` → sole session, or an `fzf` picker. `--paste` forces bracketed paste; `--enter` appends Enter. |
+| `send` (`s`) | Send to a session: literal `TEXT`, `--file`/`--stdin`, or `--keys` (tmux key names like `Enter`, `C-c`). No `-t` → sole session, or an `fzf` picker. `-e`/`--enter` appends Enter and works after text (`tpp send -t api "rs" -e`). Use `--` before literal option-looking text. |
 | `paste` | Bracketed paste + Enter (sugar over `send --paste --enter`). No `-t` → sole session, or an `fzf` picker. `--no-enter` to skip submit. |
 
 **Meta**: `config` (`path`/`show`/`edit`/`init`), `init`, `doctor`, `completions <shell>`.

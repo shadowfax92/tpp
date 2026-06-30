@@ -61,7 +61,7 @@ pub enum Cmd {
     #[command(visible_alias = "a")]
     Attach(AttachArgs),
 
-    /// Send text or keys to a session.
+    /// Send typed text (optionally Enter) or keys to a session.
     #[command(visible_alias = "s")]
     Send(SendArgs),
 
@@ -215,15 +215,11 @@ pub struct SendArgs {
     /// Use bracketed paste (verbatim multi-line; good for TUIs).
     #[arg(short = 'p', long)]
     pub paste: bool,
-    /// Press Enter after sending.
+    /// Press Enter after sending typed text.
     #[arg(short = 'e', long)]
     pub enter: bool,
-    /// Text to send (literal unless --keys).
-    #[arg(
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        value_name = "TEXT"
-    )]
+    /// Text to send (literal unless --keys; use -- before option-looking text).
+    #[arg(value_name = "TEXT")]
     pub text: Vec<String>,
 }
 
@@ -238,15 +234,11 @@ pub struct PasteArgs {
     /// Read text from stdin.
     #[arg(long, conflicts_with = "file")]
     pub stdin: bool,
-    /// Don't press Enter after pasting.
+    /// Leave pasted text unsubmitted.
     #[arg(long)]
     pub no_enter: bool,
     /// Text to paste.
-    #[arg(
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        value_name = "TEXT"
-    )]
+    #[arg(value_name = "TEXT")]
     pub text: Vec<String>,
 }
 

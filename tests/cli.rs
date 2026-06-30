@@ -102,6 +102,52 @@ fn send_short_alias_and_target() {
 }
 
 #[test]
+fn send_text_allows_enter_after_value() {
+    match parse(&["send", "-e", "yo"]).cmd {
+        Some(Cmd::Send(a)) => {
+            assert_eq!(a.text, vec!["yo"]);
+            assert!(a.enter);
+        }
+        other => panic!("expected Send, got {other:?}"),
+    }
+
+    match parse(&["send", "yo", "-e"]).cmd {
+        Some(Cmd::Send(a)) => {
+            assert_eq!(a.text, vec!["yo"]);
+            assert!(a.enter);
+        }
+        other => panic!("expected Send, got {other:?}"),
+    }
+
+    match parse(&["send", "yo", "--enter"]).cmd {
+        Some(Cmd::Send(a)) => {
+            assert_eq!(a.text, vec!["yo"]);
+            assert!(a.enter);
+        }
+        other => panic!("expected Send, got {other:?}"),
+    }
+
+    match parse(&["send", "--", "yo", "-e"]).cmd {
+        Some(Cmd::Send(a)) => {
+            assert_eq!(a.text, vec!["yo", "-e"]);
+            assert!(!a.enter);
+        }
+        other => panic!("expected Send, got {other:?}"),
+    }
+}
+
+#[test]
+fn paste_text_allows_no_enter_after_value() {
+    match parse(&["paste", "yo", "--no-enter"]).cmd {
+        Some(Cmd::Paste(a)) => {
+            assert_eq!(a.text, vec!["yo"]);
+            assert!(a.no_enter);
+        }
+        other => panic!("expected Paste, got {other:?}"),
+    }
+}
+
+#[test]
 fn run_captures_trailing_command() {
     match parse(&["run", "--", "npm", "test"]).cmd {
         Some(Cmd::Run(a)) => assert_eq!(a.command, vec!["npm", "test"]),
