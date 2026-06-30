@@ -32,7 +32,7 @@ matters. It's a drop-in replacement for `rmux` in the `sf-auto-mux` agent-dispat
 
 ## Install
 
-Requires `tmux` 3.3+ and Rust (stable). `fzf` is optional (powers the no-arg attach picker).
+Requires `tmux` 3.3+ and Rust (stable). `fzf` is optional (powers omitted-session pickers).
 
 ```sh
 cd tpp
@@ -81,24 +81,24 @@ Run `tpp <cmd> --help` for full flags. Aliases in parentheses.
 | `new` (`n`) | Create a detached session (your shell if no command). `-A` = ok if it already exists. |
 | `ls` (`l`, `list`) | List sessions in the current scope. `-a` all, `--exited` include recorded, `--json`, `-q` names-only. |
 | `attach` (`a`) | Attach (or `switch-client` if you're inside tmux). No arg → sole session, or an `fzf` picker. |
-| `rm` (`kill`, `remove`) | Kill sessions. `--all` (current scope), `--record` (save output first). |
+| `rm` (`kill`, `remove`) | Kill sessions. No args → sole session, or an `fzf --multi` picker. `--all` (current scope), `--record` (save output first). |
 | `exit` (`e`, `quit`) | Record the current session's output, then kill it. Run it from inside the session. |
-| `rename` | Rename a session. |
+| `rename` | Rename a session. `rename NEW` picks the old session; `rename OLD NEW` is explicit. |
 | `has` | Exit `0` if a session exists, else `1`. Exact match — never prefix-matches. |
 | `clear` (`clr`) | Delete recorded exited-session transcripts. |
 
 **Output**
 | Command | Does |
 |---|---|
-| `cat` (`cap`, `capture`) | Print a session's output. `-n N` trailing lines, `-S` full scrollback, `-e` keep colors, `--json`. Replays from the saved transcript if the session has exited. |
-| `tail` (`follow`) | Follow output, printing new lines as they appear. Multiple sessions get `[name]` prefixes. |
+| `cat` (`cap`, `capture`) | Print session output. No args → sole session, or an `fzf --multi` picker. `-n N` trailing lines, `-S` full scrollback, `-e` keep colors, `--json`. Replays from the saved transcript if the session has exited. |
+| `tail` (`follow`) | Follow output, printing new lines as they appear. No args → sole session, or an `fzf --multi` picker. Multiple sessions get `[name]` prefixes. |
 | `wait` | Block until `--text <s>` appears, output is `--idle`, or the pane will `--exit`. `--timeout` (exit `4`), `--json`. |
 
 **Input**
 | Command | Does |
 |---|---|
-| `send` (`s`) | Send to a session: literal `TEXT`, `--file`/`--stdin`, or `--keys` (tmux key names like `Enter`, `C-c`). `--paste` forces bracketed paste; `--enter` appends Enter. |
-| `paste` | Bracketed paste + Enter (sugar over `send --paste --enter`). `--no-enter` to skip submit. |
+| `send` (`s`) | Send to a session: literal `TEXT`, `--file`/`--stdin`, or `--keys` (tmux key names like `Enter`, `C-c`). No `-t` → sole session, or an `fzf` picker. `--paste` forces bracketed paste; `--enter` appends Enter. |
+| `paste` | Bracketed paste + Enter (sugar over `send --paste --enter`). No `-t` → sole session, or an `fzf` picker. `--no-enter` to skip submit. |
 
 **Meta**: `config` (`path`/`show`/`edit`/`init`), `init`, `doctor`, `completions <shell>`.
 
@@ -165,6 +165,8 @@ timeout_ms = 30000
 - **`--json`** on `ls`, `cat`, `wait`, and `run --wait`-adjacent flows.
 - **Stable exit codes:** `0` ok · `2` usage (clap) · `3` not found · `4` timeout · `1` other.
 - **`has`** is exit-code-only; **`-q`** trims chatter; **`new -A`** is idempotent.
+- **Omitted session names** use the sole scoped session, or `fzf` when multiple sessions are
+  available. `cat`, `tail`, and `rm` use `fzf --multi`.
 - **Bracketed paste** means a pasted prompt with `/slash` commands and newlines reaches a TUI
   exactly as written.
 

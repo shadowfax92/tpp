@@ -61,10 +61,11 @@ fn from_scope(ctx: &Ctx, mode: SelectionMode, action: &str) -> Result<Vec<String
                     return Ok(picks);
                 }
             }
-            die(
-                code::NOT_FOUND,
-                format!("name a session to {action}: {}", names.join(", ")),
-            );
+            let prompt = match mode {
+                SelectionMode::Single => format!("name a session to {action}"),
+                SelectionMode::Multi => format!("name one or more sessions to {action}"),
+            };
+            die(code::NOT_FOUND, format!("{prompt}: {}", names.join(", ")));
         }
     }
 }
