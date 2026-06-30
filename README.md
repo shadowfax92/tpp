@@ -156,7 +156,7 @@ timeout_ms = 30000
 - **Stable exit codes:** `0` ok · `2` usage (clap) · `3` not found · `4` timeout · `1` other.
 - **`has`** is exit-code-only; **`-q`** trims chatter; **`new -A`** is idempotent.
 - **Omitted session names** use the sole global session, or `fzf` when multiple sessions are
-  available. `cat`, `tail`, and `rm` use `fzf --multi`.
+  available. `tail` and `rm` use `fzf --multi`.
 - **Bracketed paste** means a pasted prompt with `/slash` commands and newlines reaches a TUI
   exactly as written.
 
