@@ -135,7 +135,10 @@ pub fn cat(ctx: &Ctx, args: CatArgs) -> Result<()> {
     let targets: Vec<String> = if args.sessions.is_empty() {
         vec![resolve_one_target(ctx, None)]
     } else {
-        args.sessions.clone()
+        args.sessions
+            .iter()
+            .map(|name| session::resolve_existing_name(&ctx.tmux, &ctx.cfg, name))
+            .collect()
     };
     let lines = args.lines.unwrap_or(ctx.cfg.capture.lines);
     let store = Store::new(&ctx.paths);
@@ -226,7 +229,10 @@ pub fn tail(ctx: &Ctx, args: TailArgs) -> Result<()> {
     let targets: Vec<String> = if args.sessions.is_empty() {
         vec![resolve_one_target(ctx, None)]
     } else {
-        args.sessions.clone()
+        args.sessions
+            .iter()
+            .map(|name| session::resolve_existing_name(&ctx.tmux, &ctx.cfg, name))
+            .collect()
     };
     let interval = Duration::from_millis(args.interval.unwrap_or(ctx.cfg.tail.interval_ms).max(50));
     let window: u32 = 500;

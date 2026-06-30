@@ -72,6 +72,9 @@ pub fn prefixed_target(cfg: &Config, target: &str) -> String {
     let target = target.trim();
     let exact = target.starts_with('=');
     let raw = target.trim_start_matches('=');
+    if raw.starts_with(['%', '@', '$', '{', '!']) {
+        return target.to_string();
+    }
     let split_at = raw.find([':', '.']).unwrap_or(raw.len());
     let (session, suffix) = raw.split_at(split_at);
     if session.is_empty() {
@@ -280,5 +283,13 @@ mod tests {
     #[test]
     fn prefixed_target_keeps_exact_marker() {
         assert_eq!(prefixed_target(&Config::default(), "=api"), "=tpp/api");
+    }
+
+    #[test]
+    fn prefixed_target_leaves_tmux_ids_unchanged() {
+        assert_eq!(prefixed_target(&Config::default(), "%0"), "%0");
+        assert_eq!(prefixed_target(&Config::default(), "@1"), "@1");
+        assert_eq!(prefixed_target(&Config::default(), "$2"), "$2");
+        assert_eq!(prefixed_target(&Config::default(), "=%0"), "=%0");
     }
 }

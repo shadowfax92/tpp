@@ -15,34 +15,71 @@ fn flag_value(args: &[String], flag: &str) -> Option<String> {
         if a == flag {
             return it.next().cloned();
         }
+        if let Some(value) = a.strip_prefix(flag) {
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
     }
     None
 }
 
-fn prefix_flag_value<F>(args: &mut [String], flag: &str, rewrite: F)
+fn rewrite_short_flag_value<F>(args: &mut [String], index: usize, flag: &str, rewrite: F) -> usize
 where
     F: Fn(&str) -> String,
 {
+    if args[index] == flag {
+        if index + 1 < args.len() {
+            args[index + 1] = rewrite(&args[index + 1]);
+        }
+        return index + 2;
+    }
+    if let Some(value) = args[index].strip_prefix(flag) {
+        if !value.is_empty() {
+            args[index] = format!("{flag}{}", rewrite(value));
+        }
+    }
+    index + 1
+}
+
+fn new_session_option_takes_value(arg: &str) -> bool {
+    matches!(arg, "-c" | "-e" | "-F" | "-f" | "-n" | "-s" | "-t" | "-x" | "-y")
+}
+
+fn prefix_new_session_args(cfg: &crate::config::Config, mut args: Vec<String>) -> Vec<String> {
     let mut i = 0;
-    while i + 1 < args.len() {
-        if args[i] == flag {
-            args[i + 1] = rewrite(&args[i + 1]);
+    while i < args.len() {
+        let arg = args[i].as_str();
+        if arg == "--" || !arg.starts_with('-') {
+            break;
+        }
+        if arg == "-s" || arg.starts_with("-s") {
+            i = rewrite_short_flag_value(&mut args, i, "-s", |name| {
+                session::prefixed_name(cfg, name)
+            });
+        } else if new_session_option_takes_value(arg) {
             i += 2;
         } else {
             i += 1;
         }
     }
-}
-
-fn prefix_new_session_args(cfg: &crate::config::Config, mut args: Vec<String>) -> Vec<String> {
-    prefix_flag_value(&mut args, "-s", |name| session::prefixed_name(cfg, name));
     args
 }
 
 fn prefix_target_args(cfg: &crate::config::Config, mut args: Vec<String>) -> Vec<String> {
-    prefix_flag_value(&mut args, "-t", |target| {
-        session::prefixed_target(cfg, target)
-    });
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--" {
+            break;
+        }
+        if args[i] == "-t" || args[i].starts_with("-t") {
+            i = rewrite_short_flag_value(&mut args, i, "-t", |target| {
+                session::prefixed_target(cfg, target)
+            });
+        } else {
+            i += 1;
+        }
+    }
     args
 }
 
@@ -183,5 +220,58 @@ mod tests {
         let rewritten = prefix_target_args(&Config::default(), args(&["-t", "api:0", "-p"]));
 
         assert_eq!(rewritten, args(&["-t", "tpp/api:0", "-p"]));
+    }
+
+    #[test]
+    fn prefix_new_session_args_rewrites_attached_session_name_flag() {
+        let rewritten = prefix_new_session_args(&Config::default(), args(&["-d", "-sapi"]));
+
+        assert_eq!(rewritten, args(&["-d", "-stpp/api"]));
+    }
+
+    #[test]
+    fn prefix_target_args_rewrites_attached_target_flag() {
+        let rewritten = prefix_target_args(&Config::default(), args(&["-tapi:0", "-p"]));
+
+        assert_eq!(rewritten, args(&["-ttpp/api:0", "-p"]));
+    }
+
+    #[test]
+    fn prefix_target_args_leaves_tmux_ids_unchanged() {
+        let rewritten = prefix_target_args(&Config::default(), args(&["-t", "%0"]));
+
+        assert_eq!(rewritten, args(&["-t", "%0"]));
+    }
+
+    #[test]
+    fn prefix_new_session_args_stops_before_shell_command() {
+        let rewritten = prefix_new_session_args(
+            &Config::default(),
+            args(&["-d", "-s", "api", "cmd", "-s", "inner"]),
+        );
+
+        assert_eq!(
+            rewritten,
+            args(&["-d", "-s", "tpp/api", "cmd", "-s", "inner"])
+        );
+    }
+
+    #[test]
+    fn prefix_rewriters_stop_at_double_dash() {
+        let new_args = prefix_new_session_args(
+            &Config::default(),
+            args(&["-d", "-s", "api", "--", "cmd", "-s", "inner"]),
+        );
+        let target_args =
+            prefix_target_args(&Config::default(), args(&["-t", "api", "--", "-t", "inner"]));
+
+        assert_eq!(
+            new_args,
+            args(&["-d", "-s", "tpp/api", "--", "cmd", "-s", "inner"])
+        );
+        assert_eq!(
+            target_args,
+            args(&["-t", "tpp/api", "--", "-t", "inner"])
+        );
     }
 }

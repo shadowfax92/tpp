@@ -128,7 +128,7 @@ are optional; `tpp init` writes the annotated starter file. Highlights:
 
 ```toml
 socket = ""              # tmux -L socket; "" = your normal tmux server (set a name to isolate)
-session_prefix = "tpp/"  # prefix applied to all tpp-created tmux session names
+session_prefix = "tpp/"  # prefix for tpp-created tmux sessions; "" disables prefixing
 
 [scope]
 mode = "git"             # git | cwd | none — how sessions group by directory
