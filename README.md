@@ -122,9 +122,11 @@ timeout_ms = 30000
 ## How it works
 
 Every call is `tmux [-L socket] -u <subcommand>`. Sessions are tagged with tmux user-options
-(`@tpp`, `@tpp_dir`, …) and read back in one `list-sessions` call, so `ls` shows every tpp
-session. `remain-on-exit` keeps a finished command's last screen so `cat`/`tail` still work;
-`exit` / `rm --record` snapshot it under `~/.tpp/data/exited/<socket>/` before killing.
+(`@tpp`, `@tpp_dir`, `@tpp_origin_pane`, …) and read back in one `list-sessions` call, so
+`ls` shows every tpp session. Output commands read from the startup pane instead of whatever
+pane is currently active. `remain-on-exit` keeps a finished command's last screen so
+`cat`/`tail` still work; `exit` / `rm --record` snapshot it under
+`~/.tpp/data/exited/<socket>/` before killing.
 
 ## Development
 
