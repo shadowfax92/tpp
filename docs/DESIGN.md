@@ -58,7 +58,8 @@ flags the scripts use onto the same internals (or forward straight to `tmux`).
 - Stable exit codes: `0` ok · `2` usage · `3` not found · `4` timeout · `1` other.
 - `-q/--quiet`, idempotent `new -A` (no-op/attach if exists), `has` is exit-code-only.
 - Human-facing omitted-session commands select the sole global session automatically, or use
-  external `fzf` when multiple sessions are available. `tail` and `rm` invoke `fzf --multi`.
+  external `fzf` when multiple sessions are available. `cat -a` includes every recorded
+  transcript in that picker; `tail` and `rm` invoke `fzf --multi`.
 
 ## Config
 

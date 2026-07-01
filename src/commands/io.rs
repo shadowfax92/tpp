@@ -1,5 +1,6 @@
 //! Input and output: `send`, `paste`, `cat`, `tail`, `wait`.
 
+use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -136,12 +137,53 @@ struct CatTarget {
     raw: Option<String>,
 }
 
+/// Build the implicit `cat` picker from live sessions plus socket-scoped recorded transcripts.
+fn cat_picker_candidates(
+    ctx: &Ctx,
+    store: &Store,
+    include_all_recorded: bool,
+) -> Result<Vec<String>> {
+    let live = session::list(&ctx.tmux)?;
+    let mut names: Vec<String> = live.iter().map(|s| s.name.clone()).collect();
+    let mut seen: HashSet<String> = names.iter().cloned().collect();
+    let recorded = if include_all_recorded {
+        store.list()?
+    } else {
+        store.recent(ctx.cfg.ls.show_exited_hours)?
+    };
+
+    for rec in recorded {
+        if seen.insert(rec.name.clone()) {
+            names.push(rec.name);
+        }
+    }
+
+    Ok(names)
+}
+
+fn cat_picker_targets(
+    ctx: &Ctx,
+    store: &Store,
+    include_all_recorded: bool,
+) -> Result<Vec<CatTarget>> {
+    let names = cat_picker_candidates(ctx, store, include_all_recorded)?;
+    Ok(
+        select::from_candidates(names, select::SelectionMode::Single, "print")?
+            .into_iter()
+            .map(|name| CatTarget {
+                resolved: name,
+                raw: None,
+            })
+            .collect(),
+    )
+}
+
 pub fn cat(ctx: &Ctx, args: CatArgs) -> Result<()> {
+    let lines = args.lines.unwrap_or(ctx.cfg.capture.lines);
+    let store_socket = ctx.tmux.store_socket();
+    let store = Store::new(&ctx.paths, store_socket.as_deref());
     let targets: Vec<CatTarget> = if args.sessions.is_empty() {
-        vec![CatTarget {
-            resolved: select::one(ctx, None, "print")?,
-            raw: None,
-        }]
+        cat_picker_targets(ctx, &store, args.all)?
     } else {
         args.sessions
             .iter()
@@ -151,9 +193,6 @@ pub fn cat(ctx: &Ctx, args: CatArgs) -> Result<()> {
             })
             .collect()
     };
-    let lines = args.lines.unwrap_or(ctx.cfg.capture.lines);
-    let store_socket = ctx.tmux.store_socket();
-    let store = Store::new(&ctx.paths, store_socket.as_deref());
     let multi = targets.len() > 1;
     let mut json_items = Vec::new();
 

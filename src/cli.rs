@@ -247,6 +247,9 @@ pub struct CatArgs {
     /// Sessions to print (default: the sole session, or a picker).
     #[arg(value_name = "SESSION")]
     pub sessions: Vec<String>,
+    /// Include every recorded exited session in the no-argument picker.
+    #[arg(short = 'a', long)]
+    pub all: bool,
     /// Trailing lines to print (0 = visible screen only; default from config).
     #[arg(short = 'n', long, value_name = "N")]
     pub lines: Option<u32>,

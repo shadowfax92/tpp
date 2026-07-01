@@ -75,7 +75,7 @@ Run `tpp <cmd> --help` for full flags. Aliases in parentheses.
 | `exit` (`e`) | Record the current session's output, then kill it. Run it from inside the session. |
 | `rename` | Rename a session. |
 | `has` | Exit `0` if a session exists, else `1`. Exact match. |
-| `cat` (`cap`) | Print session output. `-n N` trailing lines, `-S` full scrollback, `-e` keep colors, `--json`. Replays the saved transcript if the session has exited. |
+| `cat` (`cap`) | Print session output. `-n N` trailing lines, `-S` full scrollback, `-e` keep colors, `-a` includes every recorded transcript in the picker, `--json`. Replays the saved transcript if the session has exited. |
 | `tail` (`follow`) | Follow output, printing new lines as they appear. |
 | `wait` | Block until `--text <s>` appears, output is `--idle`, or the pane will `--exit`. `--timeout` (exit `4`), `--json`. |
 | `send` (`s`) | Send input: literal `TEXT`, `--file`/`--stdin`, or `--keys` (tmux key names). `-e`/`--enter` appends Enter. |
