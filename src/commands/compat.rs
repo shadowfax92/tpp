@@ -200,6 +200,11 @@ pub fn has_session(ctx: &Ctx, raw: RawArgs) -> ! {
 
 pub fn new_session(ctx: &Ctx, raw: RawArgs) -> Result<()> {
     let (raw_args, meta) = rewrite_new_session_args(&ctx.cfg, raw.args.clone());
+    let existed = meta
+        .name
+        .as_deref()
+        .map(|name| session::exists(&ctx.tmux, name))
+        .unwrap_or(false);
     let mut args = vec!["new-session".to_string()];
     args.extend(raw_args.clone());
     ctx.tmux.run(args)?;
@@ -218,7 +223,9 @@ pub fn new_session(ctx: &Ctx, raw: RawArgs) -> Result<()> {
         set("@tpp_dir", meta.dir.as_deref().unwrap_or(""));
         set("@tpp_cmd", &command_label(meta.command.as_deref()));
         set("@tpp_created", &now_epoch().to_string());
-        session::stamp_origin_pane(&ctx.tmux, &target);
+        if !existed {
+            session::stamp_origin_pane(&ctx.tmux, &target);
+        }
     }
     Ok(())
 }
