@@ -5,8 +5,12 @@ use clap::CommandFactory;
 use clap::Parser;
 use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use tpp::cli::{Cli, Cmd};
 use tpp::commands::select::{normalize_explicit, parse_fzf_output};
+
+static NEXT_SOCKET: AtomicU64 = AtomicU64::new(0);
 
 struct TmuxServer {
     socket: String,
@@ -18,8 +22,9 @@ impl TmuxServer {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
+        let seq = NEXT_SOCKET.fetch_add(1, Ordering::Relaxed);
         Self {
-            socket: format!("tpp-test-{}-{nanos}", std::process::id()),
+            socket: format!("tpp-test-{}-{nanos}-{seq}", std::process::id()),
         }
     }
 }
@@ -63,6 +68,29 @@ fn fake_fzf_path(fake_bin: &std::path::Path, script: &str) -> String {
 
     let original_path = std::env::var_os("PATH").unwrap_or_default();
     format!("{}:{}", fake_bin.display(), original_path.to_string_lossy())
+}
+
+fn run_tmux(server: &TmuxServer, args: &[&str]) -> Output {
+    Command::new("tmux")
+        .arg("-L")
+        .arg(&server.socket)
+        .args(args)
+        .output()
+        .expect("run tmux")
+}
+
+fn wait_for_raw_capture(server: &TmuxServer, target: &str, needle: &str) -> String {
+    let mut last = String::new();
+    for _ in 0..50 {
+        let out = run_tmux(server, &["capture-pane", "-p", "-t", target]);
+        assert_success(&out);
+        last = String::from_utf8_lossy(&out.stdout).to_string();
+        if last.contains(needle) {
+            return last;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!("raw tmux capture for {target} did not contain {needle:?}:\n{last}");
 }
 
 fn assert_success(out: &Output) {
@@ -503,6 +531,102 @@ fn exit_records_output_until_clear() {
 
     let missing = run_tpp(&server, tmp.path(), &["cat", "-S", "codex/exit-record"]);
     assert_not_found(&missing, "tpp/codex/exit-record");
+}
+
+#[test]
+fn cat_uses_original_pane_after_active_window_changes() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "run",
+            "-s",
+            "codex/original",
+            "--",
+            "sh",
+            "-c",
+            "printf original-output; sleep 5",
+        ],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["wait", "-t", "codex/original", "--text", "original-output"],
+    ));
+
+    assert_success(&run_tmux(
+        &server,
+        &[
+            "new-window",
+            "-t",
+            "tpp/codex/original",
+            "printf other-output; sleep 5",
+        ],
+    ));
+    let raw = wait_for_raw_capture(&server, "tpp/codex/original", "other-output");
+    assert!(raw.contains("other-output"));
+
+    let cat = run_tpp(&server, tmp.path(), &["cat", "codex/original"]);
+    assert_success(&cat);
+    let stdout = String::from_utf8_lossy(&cat.stdout);
+    assert!(stdout.contains("original-output"), "{stdout}");
+    assert!(!stdout.contains("other-output"), "{stdout}");
+}
+
+#[test]
+fn compat_new_session_cat_uses_original_pane_after_active_window_changes() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "new-session",
+            "-d",
+            "-s",
+            "codex/compat",
+            "printf compat-original-output; sleep 5",
+        ],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "wait",
+            "-t",
+            "codex/compat",
+            "--text",
+            "compat-original-output",
+        ],
+    ));
+
+    assert_success(&run_tmux(
+        &server,
+        &[
+            "new-window",
+            "-t",
+            "tpp/codex/compat",
+            "printf compat-other-output; sleep 5",
+        ],
+    ));
+    let raw = wait_for_raw_capture(&server, "tpp/codex/compat", "compat-other-output");
+    assert!(raw.contains("compat-other-output"));
+
+    let cat = run_tpp(&server, tmp.path(), &["cat", "codex/compat"]);
+    assert_success(&cat);
+    let stdout = String::from_utf8_lossy(&cat.stdout);
+    assert!(stdout.contains("compat-original-output"), "{stdout}");
+    assert!(!stdout.contains("compat-other-output"), "{stdout}");
 }
 
 #[test]

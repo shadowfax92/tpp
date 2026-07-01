@@ -14,6 +14,7 @@ use crate::tmux::{exact, tgt, Tmux, TmuxError};
 
 /// Field separator inside the `list-sessions` format.
 const SEP: char = '\u{1f}';
+const ORIGIN_PANE_OPT: &str = "@tpp_origin_pane";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionInfo {
@@ -116,6 +117,28 @@ pub fn resolve_existing_name(tmux: &Tmux, cfg: &Config, name: &str) -> String {
         raw
     } else {
         prefixed
+    }
+}
+
+/// Return the startup pane id stored for this tpp session, if it has one.
+pub fn origin_pane(tmux: &Tmux, name: &str) -> Option<String> {
+    let target = tgt(name);
+    if target.starts_with(['%', '@', '$', '{', '!']) {
+        return None;
+    }
+    tmux.run(["show-option", "-qv", "-t", &target, ORIGIN_PANE_OPT])
+        .ok()
+        .map(|pane| pane.trim().to_string())
+        .filter(|pane| !pane.is_empty())
+}
+
+/// Store the session's startup pane id for later output capture.
+pub fn stamp_origin_pane(tmux: &Tmux, target: &str) {
+    if let Ok(pane) = tmux.run(["display-message", "-p", "-t", target, "#{pane_id}"]) {
+        let pane = pane.trim();
+        if !pane.is_empty() {
+            set_opt(tmux, target, ORIGIN_PANE_OPT, pane);
+        }
     }
 }
 
@@ -236,6 +259,7 @@ pub fn create(tmux: &Tmux, cfg: &Config, opts: NewOpts) -> Result<String> {
     set_opt(tmux, &target, "@tpp_dir", opts.dir.as_deref().unwrap_or(""));
     set_opt(tmux, &target, "@tpp_cmd", &cmd_label);
     set_opt(tmux, &target, "@tpp_created", &now_epoch().to_string());
+    stamp_origin_pane(tmux, &target);
 
     if !command.is_empty() {
         let mut r: Vec<String> = vec!["respawn-pane".into(), "-k".into(), "-t".into(), target];

@@ -42,6 +42,11 @@ pub fn no_such_session(name: &str) -> ! {
     die(code::NOT_FOUND, no_such_session_message(name))
 }
 
+/// Resolve the pane tpp output commands should read from.
+fn output_target(tmux: &Tmux, name: &str) -> String {
+    session::origin_pane(tmux, name).unwrap_or_else(|| tgt(name))
+}
+
 /// Resolve the session a single-target command should act on.
 pub fn resolve_one_target(ctx: &Ctx, explicit: Option<&str>) -> String {
     if let Some(name) = explicit {
@@ -76,12 +81,13 @@ pub fn capture(
     escape: bool,
     all_history: bool,
 ) -> Result<String, TmuxError> {
+    let target = output_target(tmux, name);
     let mut args: Vec<String> = vec![
         "capture-pane".into(),
         "-p".into(),
         "-J".into(),
         "-t".into(),
-        tgt(name),
+        target,
     ];
     if escape {
         args.push("-e".into());
@@ -117,11 +123,17 @@ pub fn trim_trailing_blank(s: &str) -> String {
     lines.join("\n")
 }
 
-/// Whether the active pane's command has exited (kept visible by remain-on-exit).
+/// Whether the output pane's command has exited.
 pub fn pane_dead(tmux: &Tmux, name: &str) -> bool {
-    tmux.run(["display-message", "-p", "-t", &tgt(name), "#{pane_dead}"])
-        .map(|s| s.trim() == "1")
-        .unwrap_or(false)
+    tmux.run([
+        "display-message",
+        "-p",
+        "-t",
+        &output_target(tmux, name),
+        "#{pane_dead}",
+    ])
+    .map(|s| s.trim() == "1")
+    .unwrap_or(false)
 }
 
 /// Exit status of a dead pane, if tmux reports one.
@@ -130,7 +142,7 @@ pub fn pane_dead_status(tmux: &Tmux, name: &str) -> Option<i32> {
         "display-message",
         "-p",
         "-t",
-        &tgt(name),
+        &output_target(tmux, name),
         "#{pane_dead_status}",
     ])
     .ok()
