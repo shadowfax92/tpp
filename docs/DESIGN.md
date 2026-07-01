@@ -30,8 +30,9 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
 - **Global session set.** Every human-facing command operates on all `tpp` sessions in the
   selected tmux socket. If a target is omitted, tpp picks the sole session or invokes `fzf`.
 - **Tags** live on the tmux session as user-options: `@tpp=1`, `@tpp_dir`,
-  `@tpp_cmd`, `@tpp_created`. No external index needed for discovery — tmux is the source
-  of truth. `ls` reads them back with a single `list-sessions -F` call.
+  `@tpp_cmd`, `@tpp_created`, `@tpp_origin_pane`. No external index needed for discovery
+  or output targeting — tmux is the source of truth. `ls` reads session metadata back with
+  a single `list-sessions -F` call.
 - **remain-on-exit** is set on every `tpp` session so a finished command leaves its output
   on screen (so `cat`/`tail` still work) instead of vanishing.
 - **Exited records.** `tpp exit` / `tpp rm --record` capture the final scrollback to

@@ -218,6 +218,7 @@ pub fn new_session(ctx: &Ctx, raw: RawArgs) -> Result<()> {
         set("@tpp_dir", meta.dir.as_deref().unwrap_or(""));
         set("@tpp_cmd", &command_label(meta.command.as_deref()));
         set("@tpp_created", &now_epoch().to_string());
+        session::stamp_origin_pane(&ctx.tmux, &target);
     }
     Ok(())
 }

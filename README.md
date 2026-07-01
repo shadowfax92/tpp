@@ -194,8 +194,9 @@ See [`docs/sf-auto-mux.md`](docs/sf-auto-mux.md) for an annotated before/after.
 - **Wraps tmux.** Every call is `tmux [-L socket] -u <subcommand>`; targets that must be exact
   (existence checks) use tmux's `=name` form, the rest use the plain name (which exact-matches
   an existing session).
-- **Tags as user-options.** `@tpp`, `@tpp_dir`, `@tpp_cmd`, `@tpp_created` live on
-  the session and are read back in one `list-sessions -F` call. `ls` shows every `@tpp` session.
+- **Tags as user-options.** `@tpp`, `@tpp_dir`, `@tpp_cmd`, `@tpp_created`, and
+  `@tpp_origin_pane` live on the session. `ls` shows every `@tpp` session, and output
+  commands read from the startup pane instead of whatever pane is currently active.
 - **remain-on-exit** keeps a finished command's last screen so `cat`/`tail` still work; `exit`
   / `rm --record` snapshot it under `~/.local/state/tpp/exited/<socket>/` before killing.
 
