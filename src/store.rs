@@ -1,8 +1,4 @@
-//! Recorded exited sessions. When a session is exited/removed with recording on, its final
-//! scrollback is written under `~/.local/state/tpp/exited/<socket>/` so `cat` can replay a dead
-//! session without leaking transcripts across tmux sockets. The log is written before the
-//! metadata, so a crash leaves at worst an orphan log (harmless) rather than metadata pointing
-//! at nothing.
+//! Recorded exited sessions under the socket-scoped tpp data directory.
 
 use std::path::PathBuf;
 
@@ -77,6 +73,7 @@ impl Store {
     pub fn record(&self, rec: &ExitedRecord, output: &str) -> Result<()> {
         create_private_dir_all(&self.dir)?;
         let (json, log) = self.paths_for(&rec.name);
+        // Log first so a crash cannot leave metadata pointing at a missing transcript.
         std::fs::write(&log, output).with_context(|| format!("writing {}", log.display()))?;
         let data = serde_json::to_vec_pretty(rec)?;
         std::fs::write(&json, data).with_context(|| format!("writing {}", json.display()))?;

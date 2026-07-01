@@ -367,6 +367,77 @@ fn cat_resolves_unprefixed_recorded_session_name() {
 }
 
 #[test]
+fn exit_records_output_until_clear() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "run",
+            "-s",
+            "codex/exit-record",
+            "--",
+            "sh",
+            "-c",
+            "i=1; while [ \"$i\" -le 1105 ]; do echo line-$i; i=$((i+1)); done; sleep 30",
+        ],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "wait",
+            "-t",
+            "codex/exit-record",
+            "--text",
+            "line-1105",
+            "--timeout",
+            "5000",
+        ],
+    ));
+
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["exit", "codex/exit-record"],
+    ));
+
+    let exited_dir = tmp.path().join("state").join("exited");
+    let logs: Vec<_> = std::fs::read_dir(&exited_dir)
+        .unwrap()
+        .flat_map(|entry| std::fs::read_dir(entry.unwrap().path()).unwrap())
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("log"))
+        .collect();
+    assert_eq!(logs.len(), 1, "logs under {}", exited_dir.display());
+    assert!(logs[0]
+        .parent()
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("socket-")));
+
+    let cat = run_tpp(&server, tmp.path(), &["cat", "-S", "codex/exit-record"]);
+    assert_success(&cat);
+    let stdout = String::from_utf8_lossy(&cat.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 1000);
+    assert_eq!(lines.first(), Some(&"line-106"));
+    assert_eq!(lines.last(), Some(&"line-1105"));
+
+    let clear = run_tpp(&server, tmp.path(), &["clear"]);
+    assert_success(&clear);
+    assert!(String::from_utf8_lossy(&clear.stdout).contains("cleared 1"));
+
+    let missing = run_tpp(&server, tmp.path(), &["cat", "-S", "codex/exit-record"]);
+    assert_not_found(&missing, "tpp/codex/exit-record");
+}
+
+#[test]
 fn cat_uses_original_pane_after_active_window_changes() {
     if !tmux_available() {
         return;

@@ -151,7 +151,7 @@ impl Default for TailCfg {
 impl Default for ExitCfg {
     fn default() -> Self {
         Self {
-            record_lines: 2000,
+            record_lines: 1000,
             prune_hours: 24,
         }
     }
@@ -211,7 +211,7 @@ lines = 200              # default trailing lines for `cat` (0 = visible screen 
 interval_ms = 1000       # poll cadence for `tail`
 
 [exit]
-record_lines = 2000      # scrollback recorded when a session exits
+record_lines = 1000      # scrollback recorded when a session exits
 prune_hours = 24         # forget recorded exited sessions after N hours
 
 [wait]
@@ -258,5 +258,15 @@ mod tests {
     fn starter_config_does_not_document_scope() {
         assert!(!STARTER_CONFIG.contains("[scope]"));
         assert!(!STARTER_CONFIG.contains("mode = \"git\""));
+    }
+
+    #[test]
+    fn exit_record_lines_default_to_1000() {
+        assert_eq!(Config::default().exit.record_lines, 1000);
+    }
+
+    #[test]
+    fn starter_config_documents_exit_record_lines() {
+        assert!(STARTER_CONFIG.contains("record_lines = 1000"));
     }
 }
