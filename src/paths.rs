@@ -1,12 +1,11 @@
-//! Filesystem locations for tpp.
-//!
-//! Config lives under `$TPP_CONFIG_DIR` (default `$HOME/.config/tpp`); state (recorded
-//! exited sessions, scratch paste buffers) under `$TPP_STATE_DIR` (default
-//! `$HOME/.local/state/tpp`). Both are overridable so tests and sandboxes can redirect them.
+//! Filesystem locations for tpp config and persisted data.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+
+const DEFAULT_CONFIG_SUFFIX: &[&str] = &[".config", "tpp"];
+const DEFAULT_STATE_SUFFIX: &[&str] = &[".tpp", "data"];
 
 #[derive(Debug, Clone)]
 pub struct Paths {
@@ -19,8 +18,8 @@ impl Paths {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .context("HOME is not set")?;
-        let config_dir = resolve("TPP_CONFIG_DIR", &home, &[".config", "tpp"]);
-        let state_dir = resolve("TPP_STATE_DIR", &home, &[".local", "state", "tpp"]);
+        let config_dir = resolve("TPP_CONFIG_DIR", &home, DEFAULT_CONFIG_SUFFIX);
+        let state_dir = resolve("TPP_STATE_DIR", &home, DEFAULT_STATE_SUFFIX);
         Ok(Self {
             config_dir,
             state_dir,
@@ -42,6 +41,10 @@ fn resolve(env: &str, home: &Path, suffix: &[&str]) -> PathBuf {
     if let Some(dir) = std::env::var_os(env) {
         return PathBuf::from(dir);
     }
+    default_path(home, suffix)
+}
+
+fn default_path(home: &Path, suffix: &[&str]) -> PathBuf {
     let mut p = home.to_path_buf();
     for s in suffix {
         p.push(s);
@@ -58,4 +61,19 @@ pub fn create_private_dir_all(dir: &Path) -> Result<()> {
         .mode(0o700)
         .create(dir)
         .with_context(|| format!("creating {}", dir.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_state_dir_is_tpp_data() {
+        let home = PathBuf::from("/Users/shadowfax");
+
+        assert_eq!(
+            default_path(&home, DEFAULT_STATE_SUFFIX),
+            PathBuf::from("/Users/shadowfax/.tpp/data")
+        );
+    }
 }

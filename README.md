@@ -116,7 +116,7 @@ names. There is no directory grouping.
 ## Configuration
 
 `~/.config/tpp/config.toml` (path via `tpp config path`; override dir with `$TPP_CONFIG_DIR`).
-State (recorded transcripts) lives under `~/.local/state/tpp/` (`$TPP_STATE_DIR`). All settings
+State (recorded transcripts) lives under `~/.tpp/data/` (`$TPP_STATE_DIR`). All settings
 are optional; `tpp init` writes the annotated starter file. Highlights:
 
 ```toml
@@ -141,7 +141,7 @@ lines = 200              # default trailing lines for `cat`
 interval_ms = 1000
 
 [exit]
-record_lines = 2000      # transcript length saved on exit
+record_lines = 1000      # transcript length saved on exit
 prune_hours = 24         # forget transcripts after N hours
 
 [wait]
@@ -197,7 +197,7 @@ See [`docs/sf-auto-mux.md`](docs/sf-auto-mux.md) for an annotated before/after.
 - **Tags as user-options.** `@tpp`, `@tpp_dir`, `@tpp_cmd`, `@tpp_created` live on
   the session and are read back in one `list-sessions -F` call. `ls` shows every `@tpp` session.
 - **remain-on-exit** keeps a finished command's last screen so `cat`/`tail` still work; `exit`
-  / `rm --record` snapshot it under `~/.local/state/tpp/exited/<socket>/` before killing.
+  / `rm --record` snapshot it under `~/.tpp/data/exited/<socket>/` before killing.
 
 ## Related tools
 
