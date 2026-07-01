@@ -54,11 +54,20 @@ pub fn many(ctx: &Ctx, explicit: &[String], action: &str) -> Result<Vec<String>>
 
 fn from_all(ctx: &Ctx, mode: SelectionMode, action: &str) -> Result<Vec<String>> {
     let sessions = session::list(&ctx.tmux)?;
-    match sessions.len() {
+    let names: Vec<String> = sessions.into_iter().map(|s| s.name).collect();
+    from_candidates(names, mode, action)
+}
+
+/// Select from a command-provided session list using the normal sole-session/fzf fallback.
+pub fn from_candidates(
+    names: Vec<String>,
+    mode: SelectionMode,
+    action: &str,
+) -> Result<Vec<String>> {
+    match names.len() {
         0 => die(code::NOT_FOUND, format!("no sessions to {action}")),
-        1 => Ok(vec![sessions[0].name.clone()]),
+        1 => Ok(names),
         _ => {
-            let names: Vec<String> = sessions.into_iter().map(|s| s.name).collect();
             if let Some(picks) = fzf_pick(&names, mode) {
                 if !picks.is_empty() {
                     return Ok(picks);

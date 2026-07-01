@@ -3,6 +3,7 @@
 
 use clap::CommandFactory;
 use clap::Parser;
+use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Output, Stdio};
 use tpp::cli::{Cli, Cmd};
 use tpp::commands::select::{normalize_explicit, parse_fzf_output};
@@ -50,6 +51,18 @@ fn run_tpp(server: &TmuxServer, root: &std::path::Path, args: &[&str]) -> Output
         .env("TPP_STATE_DIR", root.join("state"))
         .output()
         .expect("run tpp")
+}
+
+fn fake_fzf_path(fake_bin: &std::path::Path, script: &str) -> String {
+    std::fs::create_dir_all(fake_bin).unwrap();
+    let fake_fzf = fake_bin.join("fzf");
+    std::fs::write(&fake_fzf, script).unwrap();
+    let mut perms = std::fs::metadata(&fake_fzf).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&fake_fzf, perms).unwrap();
+
+    let original_path = std::env::var_os("PATH").unwrap_or_default();
+    format!("{}:{}", fake_bin.display(), original_path.to_string_lossy())
 }
 
 fn assert_success(out: &Output) {
@@ -229,16 +242,7 @@ fn rm_without_names_uses_global_picker_candidates() {
     let server = TmuxServer::new();
     let tmp = tempfile::tempdir().unwrap();
     let fake_bin = tmp.path().join("bin");
-    std::fs::create_dir_all(&fake_bin).unwrap();
-    let fake_fzf = fake_bin.join("fzf");
-    std::fs::write(&fake_fzf, "#!/bin/sh\ncat\n").unwrap();
-    let mut perms = std::fs::metadata(&fake_fzf).unwrap().permissions();
-    use std::os::unix::fs::PermissionsExt;
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&fake_fzf, perms).unwrap();
-
-    let original_path = std::env::var_os("PATH").unwrap_or_default();
-    let path = format!("{}:{}", fake_bin.display(), original_path.to_string_lossy());
+    let path = fake_fzf_path(&fake_bin, "#!/bin/sh\ncat\n");
     let dir_a = tmp.path().join("a");
     let dir_b = tmp.path().join("b");
     std::fs::create_dir_all(&dir_a).unwrap();
@@ -336,6 +340,98 @@ fn cat_resolves_unprefixed_recorded_session_name() {
     let cat = run_tpp(&server, tmp.path(), &["cat", "codex/recorded"]);
     assert_success(&cat);
     assert!(String::from_utf8_lossy(&cat.stdout).contains("recorded-output"));
+}
+
+#[test]
+fn cat_without_name_prints_recent_recorded_session() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "run",
+            "-s",
+            "codex/auto-recorded",
+            "--wait",
+            "--record",
+            "--",
+            "sh",
+            "-c",
+            "printf auto-recorded-output",
+        ],
+    ));
+
+    let cat = run_tpp(&server, tmp.path(), &["cat", "-S"]);
+    assert_success(&cat);
+    assert!(String::from_utf8_lossy(&cat.stdout).contains("auto-recorded-output"));
+}
+
+#[test]
+fn cat_all_offers_recorded_sessions_to_fzf() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    for (name, output) in [
+        ("codex/pick-one", "pick-one-output"),
+        ("codex/pick-two", "pick-two-output"),
+    ] {
+        assert_success(&run_tpp(
+            &server,
+            tmp.path(),
+            &[
+                "run",
+                "-s",
+                name,
+                "--wait",
+                "--record",
+                "--",
+                "sh",
+                "-c",
+                "printf $0",
+                output,
+            ],
+        ));
+    }
+    let config_dir = tmp.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "[ls]\nshow_exited_hours = 0\n",
+    )
+    .unwrap();
+
+    let fake_bin = tmp.path().join("bin");
+    let path = fake_fzf_path(
+        &fake_bin,
+        "#!/bin/sh\ncat > \"$FZF_CAPTURE\"\nprintf '%s\\n' \"$FZF_PICK\"\n",
+    );
+    let capture_path = tmp.path().join("fzf-candidates");
+    let cat = Command::new(env!("CARGO_BIN_EXE_tpp"))
+        .arg("-L")
+        .arg(&server.socket)
+        .args(["cat", "-a", "-S"])
+        .env("TPP_CONFIG_DIR", tmp.path().join("config"))
+        .env("TPP_STATE_DIR", tmp.path().join("state"))
+        .env("PATH", path)
+        .env("FZF_CAPTURE", &capture_path)
+        .env("FZF_PICK", "tpp/codex/pick-two")
+        .output()
+        .expect("run tpp cat");
+
+    assert_success(&cat);
+    assert!(String::from_utf8_lossy(&cat.stdout).contains("pick-two-output"));
+
+    let candidates = std::fs::read_to_string(capture_path).unwrap();
+    assert!(candidates.contains("tpp/codex/pick-one"));
+    assert!(candidates.contains("tpp/codex/pick-two"));
 }
 
 #[test]
