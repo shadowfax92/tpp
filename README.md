@@ -97,7 +97,7 @@ scripts work unchanged.
 ## Configuration
 
 `~/.config/tpp/config.toml` (path via `tpp config path`; override the dir with `$TPP_CONFIG_DIR`).
-Recorded transcripts live under `~/.local/state/tpp/`. All settings are optional; `tpp init`
+Recorded transcripts live under `~/.tpp/data/` (`$TPP_STATE_DIR`). All settings are optional; `tpp init`
 writes an annotated starter file. Highlights:
 
 ```toml
@@ -110,6 +110,10 @@ bracketed_paste = true   # multi-line text pastes verbatim
 [new]
 remain_on_exit = true    # keep a finished command's output on screen for cat/tail
 
+[exit]
+record_lines = 1000      # transcript length saved on exit
+prune_hours = 24         # forget transcripts after N hours
+
 [wait]
 stable_for_ms = 750      # "idle" = output unchanged this long
 timeout_ms = 30000
@@ -120,7 +124,7 @@ timeout_ms = 30000
 Every call is `tmux [-L socket] -u <subcommand>`. Sessions are tagged with tmux user-options
 (`@tpp`, `@tpp_dir`, …) and read back in one `list-sessions` call, so `ls` shows every tpp
 session. `remain-on-exit` keeps a finished command's last screen so `cat`/`tail` still work;
-`exit` / `rm --record` snapshot it under `~/.local/state/tpp/` before killing.
+`exit` / `rm --record` snapshot it under `~/.tpp/data/exited/<socket>/` before killing.
 
 ## Development
 

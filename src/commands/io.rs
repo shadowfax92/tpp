@@ -453,6 +453,10 @@ pub fn run_wait(ctx: &Ctx, name: &str) -> Result<i32> {
     }
 }
 
+fn recordable_output(raw: &str, line_limit: usize) -> String {
+    last_lines(&trim_trailing_blank(raw), line_limit)
+}
+
 /// Record a session's current output as an exited record (used by `exit`/`rm --record`).
 pub fn record_session(ctx: &Ctx, name: &str) -> Result<()> {
     let info = crate::commands::find_session(&ctx.tmux, name);
@@ -463,7 +467,7 @@ pub fn record_session(ctx: &Ctx, name: &str) -> Result<()> {
         false,
         false,
     )
-    .map(|s| trim_trailing_blank(&s))
+    .map(|s| recordable_output(&s, ctx.cfg.exit.record_lines as usize))
     .unwrap_or_default();
     let rec = crate::store::ExitedRecord {
         name: name.to_string(),
@@ -477,7 +481,7 @@ pub fn record_session(ctx: &Ctx, name: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{appended, overlap};
+    use super::{appended, overlap, recordable_output};
 
     #[test]
     fn overlap_finds_suffix_prefix() {
@@ -500,5 +504,15 @@ mod tests {
     fn appended_full_reset_and_nochange() {
         assert_eq!(appended("aaa", "bbb"), "bbb");
         assert_eq!(appended("x", "x"), "");
+    }
+
+    #[test]
+    fn recordable_output_keeps_last_configured_lines() {
+        assert_eq!(recordable_output("1\n2\n3\n4\n5", 3), "3\n4\n5");
+    }
+
+    #[test]
+    fn recordable_output_trims_blank_padding_before_limiting() {
+        assert_eq!(recordable_output("1\n2\n\n\n", 10), "1\n2");
     }
 }
