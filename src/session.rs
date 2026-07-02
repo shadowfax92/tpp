@@ -339,17 +339,32 @@ fn pane_state_for_target(tmux: &Tmux, target: &str) -> Option<PaneState> {
     if f.len() < 3 {
         return None;
     }
+    let dead = match f[0].trim() {
+        "0" => false,
+        "1" => true,
+        _ => return None,
+    };
     Some(PaneState {
-        dead: f[0] == "1",
+        dead,
         pid: parse_optional_u32(f[1]),
         exit_status: parse_optional_i32(f[2]),
     })
 }
 
+fn missing_root_pane_state() -> PaneState {
+    PaneState {
+        dead: true,
+        pid: None,
+        exit_status: None,
+    }
+}
+
 /// Return process state for the startup pane that defines this tpp session's liveness.
 pub fn root_pane_state(tmux: &Tmux, name: &str) -> Option<PaneState> {
-    let target = origin_pane(tmux, name).unwrap_or_else(|| tgt(name));
-    pane_state_for_target(tmux, &target).or_else(|| pane_state_for_target(tmux, name))
+    if let Some(target) = origin_pane(tmux, name) {
+        return Some(pane_state_for_target(tmux, &target).unwrap_or_else(missing_root_pane_state));
+    }
+    pane_state_for_target(tmux, name)
 }
 
 /// True when the session exists and its startup pane process has not exited.
@@ -512,9 +527,11 @@ pub fn list(tmux: &Tmux) -> Result<Vec<SessionInfo>> {
         if f[1] != "1" {
             continue;
         }
-        let pane_target = if f[7].is_empty() { f[0] } else { f[7] };
-        let pane_state =
-            pane_state_for_target(tmux, pane_target).or_else(|| pane_state_for_target(tmux, f[0]));
+        let pane_state = if f[7].is_empty() {
+            pane_state_for_target(tmux, f[0])
+        } else {
+            Some(pane_state_for_target(tmux, f[7]).unwrap_or_else(missing_root_pane_state))
+        };
         let dead = pane_state.as_ref().map(|pane| pane.dead).unwrap_or(false);
         let s = SessionInfo {
             name: f[0].to_string(),

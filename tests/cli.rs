@@ -740,6 +740,79 @@ fn ls_json_reports_alive_state_fields() {
 }
 
 #[test]
+fn alive_check_treats_missing_origin_pane_as_not_alive() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "new",
+            "-s",
+            "codex/missing-origin",
+            "--",
+            "sh",
+            "-c",
+            "printf root-ready; sleep 30",
+        ],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["wait", "-t", "codex/missing-origin", "--text", "root-ready"],
+    ));
+    let origin = run_tmux(
+        &server,
+        &[
+            "show-option",
+            "-qv",
+            "-t",
+            "tpp/codex/missing-origin",
+            "@tpp_origin_pane",
+        ],
+    );
+    assert_success(&origin);
+    let origin = String::from_utf8_lossy(&origin.stdout).trim().to_string();
+    assert!(!origin.is_empty());
+
+    assert_success(&run_tmux(
+        &server,
+        &[
+            "split-window",
+            "-t",
+            "tpp/codex/missing-origin",
+            "sh",
+            "-c",
+            "sleep 30",
+        ],
+    ));
+    assert_success(&run_tmux(&server, &["kill-pane", "-t", &origin]));
+
+    assert_exit_code(
+        &run_tpp(
+            &server,
+            tmp.path(),
+            &["has", "codex/missing-origin", "--alive"],
+        ),
+        1,
+    );
+
+    let ls = run_tpp(&server, tmp.path(), &["--json", "ls"]);
+    assert_success(&ls);
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&ls.stdout).unwrap();
+    let row = rows
+        .iter()
+        .find(|row| row["name"] == "tpp/codex/missing-origin")
+        .unwrap();
+    assert_eq!(row["state"], "exited");
+    assert_eq!(row["pane_dead"], true);
+}
+
+#[test]
 fn on_exit_hook_fires_once_for_natural_exit() {
     if !tmux_available() {
         return;
