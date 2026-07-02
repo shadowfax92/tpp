@@ -92,6 +92,7 @@ pub fn run(ctx: &Ctx, args: RunArgs) -> Result<()> {
             command: args.command.clone(),
             width: None,
             height: None,
+            on_exit: None,
         },
     )?;
 
@@ -136,6 +137,15 @@ pub fn new(ctx: &Ctx, args: NewArgs) -> Result<()> {
     }
 
     let dir = args.dir.clone().or_else(cwd_string);
+    let store_socket = ctx.tmux.store_socket();
+    let on_exit = args
+        .on_exit
+        .clone()
+        .map(|command| {
+            session::OnExitHook::new(&ctx.paths, store_socket.as_deref(), &name, command)
+        })
+        .transpose()?;
+
     session::create(
         &ctx.tmux,
         &ctx.cfg,
@@ -145,6 +155,7 @@ pub fn new(ctx: &Ctx, args: NewArgs) -> Result<()> {
             command: args.command.clone(),
             width: None,
             height: None,
+            on_exit,
         },
     )?;
 
@@ -312,6 +323,7 @@ pub fn rm(ctx: &Ctx, args: RmArgs) -> Result<()> {
         if args.record {
             let _ = record_session(ctx, name);
         }
+        session::fire_on_exit_hook(&ctx.tmux, name);
         match ctx.tmux.run(["kill-session", "-t", &exact(name)]) {
             Ok(_) => removed += 1,
             Err(e) => eprintln!("tpp: failed to remove {name}: {e}"),
@@ -340,6 +352,7 @@ pub fn exit(ctx: &Ctx, args: ExitArgs) -> Result<()> {
     if !args.no_record {
         let _ = record_session(ctx, &name);
     }
+    session::fire_on_exit_hook(&ctx.tmux, &name);
     let _ = ctx.tmux.run(["kill-session", "-t", &exact(&name)]);
     if !ctx.quiet {
         eprintln!("exited {name}");

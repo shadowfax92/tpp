@@ -4,23 +4,41 @@
 //! (`@tpp*`) we read back with a single `list-sessions -F`. A leading `=` makes every target
 //! an exact match.
 
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use serde::Serialize;
 
 use crate::config::Config;
+use crate::paths::{create_private_dir_all, Paths};
 use crate::tmux::{exact, tgt, Tmux, TmuxError};
 
 /// Field separator inside the `list-sessions` format.
 const SEP: char = '\u{1f}';
 const ORIGIN_PANE_OPT: &str = "@tpp_origin_pane";
+const ON_EXIT_CMD_FILE_OPT: &str = "@tpp_on_exit_cmd_file";
+const ON_EXIT_MARKER_OPT: &str = "@tpp_on_exit_marker";
+const ON_EXIT_LOG_OPT: &str = "@tpp_on_exit_log";
+const ON_EXIT_HOOK_INDEX_OPT: &str = "@tpp_on_exit_hook_index";
+const ON_EXIT_RUNNER_OPT: &str = "@tpp_on_exit_runner";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PaneState {
     pub dead: bool,
     pub pid: Option<u32>,
     pub exit_status: Option<i32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OnExitHook {
+    command_file: PathBuf,
+    marker: PathBuf,
+    log: PathBuf,
+    runner: PathBuf,
+    hook_index: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -67,15 +85,160 @@ pub fn now_epoch() -> i64 {
         .unwrap_or(0)
 }
 
+fn now_nanos() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
+}
+
 /// True if a session with this exact name exists on the socket.
 pub fn exists(tmux: &Tmux, name: &str) -> bool {
     tmux.ok(["has-session", "-t", &exact(name)])
+}
+
+fn encode_component(name: &str) -> String {
+    let mut s = String::with_capacity(name.len());
+    for b in name.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-' => s.push(b as char),
+            _ => s.push_str(&format!("%{b:02X}")),
+        }
+    }
+    s
 }
 
 fn safe_session_name(name: &str) -> String {
     name.chars()
         .map(|c| if matches!(c, ':' | '.') { '_' } else { c })
         .collect()
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn tmux_double_quote(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn unique_hook_index() -> String {
+    let pid = std::process::id() as u128;
+    let raw = now_nanos().wrapping_add(pid * 1_000_003);
+    let index = (raw % 2_147_483_647).max(1);
+    index.to_string()
+}
+
+fn hook_root(paths: &Paths, socket: Option<&str>) -> PathBuf {
+    let socket = socket
+        .map(encode_component)
+        .unwrap_or_else(|| "default".into());
+    paths.state_dir.join("hooks").join(socket)
+}
+
+impl OnExitHook {
+    /// Persist the opaque hook command and reserve the once-marker paths used by tmux hooks.
+    pub fn new(
+        paths: &Paths,
+        socket: Option<&str>,
+        session_name: &str,
+        command: String,
+    ) -> Result<Self> {
+        let hook_index = unique_hook_index();
+        let base = hook_root(paths, socket);
+        create_private_dir_all(&base)?;
+        let stem = format!("{}-{hook_index}", encode_component(session_name));
+        let command_file = base.join(format!("{stem}.cmd"));
+        let runner = base.join(format!("{stem}.sh"));
+        let marker = base.join(format!("{stem}.once"));
+        let log = base.join("on-exit.log");
+        std::fs::write(&command_file, command)?;
+        Ok(Self {
+            command_file,
+            marker,
+            log,
+            runner,
+            hook_index,
+        })
+    }
+
+    fn write_runner(&self, expected_pane: &str, expected_session: &str) -> Result<()> {
+        let script = format!(
+            r#"#!/bin/sh
+expected_pane={}
+expected_session={}
+marker={}
+command_file={}
+log={}
+hook_index={}
+actual_pane=${{1:-}}
+actual_session=${{2:-}}
+session_name=${{3:-}}
+exit_status=${{4:-}}
+socket_path=${{5:-}}
+if [ -n "$actual_pane" ] && [ "$actual_pane" != "$expected_pane" ]; then exit 0; fi
+if [ -n "$actual_session" ] && [ "$actual_session" != "$expected_session" ]; then exit 0; fi
+parent=$(dirname "$marker")
+mkdir -p "$parent" 2>/dev/null || true
+if mkdir "$marker" 2>/dev/null; then
+  cmd=$(cat "$command_file" 2>/dev/null) || cmd=
+  if [ -n "$cmd" ]; then
+    env TPP_SESSION_NAME="$session_name" TPP_SESSION="$session_name" TPP_EXIT_STATUS="$exit_status" sh -c "$cmd"
+    status=$?
+    if [ "$status" -ne 0 ]; then
+      mkdir -p "$(dirname "$log")" 2>/dev/null || true
+      printf '%s hook failed for %s: exit %s\n' "$(date -u +%FT%TZ)" "$session_name" "$status" >> "$log"
+    fi
+  fi
+fi
+if [ -n "$hook_index" ] && [ -n "$socket_path" ]; then
+  tmux -S "$socket_path" set-hook -gu "session-closed[$hook_index]" >/dev/null 2>&1 || true
+fi
+exit 0
+"#,
+            shell_quote(expected_pane),
+            shell_quote(expected_session),
+            shell_quote(&self.marker.to_string_lossy()),
+            shell_quote(&self.command_file.to_string_lossy()),
+            shell_quote(&self.log.to_string_lossy()),
+            shell_quote(&self.hook_index),
+        );
+        std::fs::write(&self.runner, script)?;
+        Ok(())
+    }
+
+    fn hook_command(&self, args: &[&str], background: bool) -> String {
+        let mut shell = format!("sh {}", shell_quote(&self.runner.to_string_lossy()));
+        for arg in args {
+            shell.push(' ');
+            shell.push_str(&shell_quote(arg));
+        }
+        let flag = if background { " -b" } else { "" };
+        format!("run-shell{flag} {}", tmux_double_quote(&shell))
+    }
+
+    fn store_options(&self, tmux: &Tmux, target: &str) {
+        set_opt(
+            tmux,
+            target,
+            ON_EXIT_CMD_FILE_OPT,
+            &self.command_file.to_string_lossy(),
+        );
+        set_opt(
+            tmux,
+            target,
+            ON_EXIT_MARKER_OPT,
+            &self.marker.to_string_lossy(),
+        );
+        set_opt(tmux, target, ON_EXIT_LOG_OPT, &self.log.to_string_lossy());
+        set_opt(tmux, target, ON_EXIT_HOOK_INDEX_OPT, &self.hook_index);
+        set_opt(
+            tmux,
+            target,
+            ON_EXIT_RUNNER_OPT,
+            &self.runner.to_string_lossy(),
+        );
+    }
 }
 
 /// Apply the configured tpp session prefix to a session name, unless already present.
@@ -194,6 +357,129 @@ pub fn is_alive(tmux: &Tmux, name: &str) -> bool {
     exists(tmux, name) && root_pane_state(tmux, name).is_some_and(|pane| !pane.dead)
 }
 
+fn show_opt(tmux: &Tmux, target: &str, key: &str) -> Option<String> {
+    tmux.run(["show-option", "-qv", "-t", &tgt(target), key])
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn append_hook_log(log: &Path, message: &str) {
+    if let Some(parent) = log.parent() {
+        let _ = create_private_dir_all(parent);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log)
+    {
+        let _ = writeln!(file, "{message}");
+    }
+}
+
+fn claim_marker(marker: &Path) -> bool {
+    if let Some(parent) = marker.parent() {
+        let _ = create_private_dir_all(parent);
+    }
+    std::fs::create_dir(marker).is_ok()
+}
+
+struct StoredOnExitHook {
+    command_file: PathBuf,
+    marker: PathBuf,
+    log: PathBuf,
+}
+
+impl StoredOnExitHook {
+    fn load(tmux: &Tmux, target: &str) -> Option<Self> {
+        Some(Self {
+            command_file: PathBuf::from(show_opt(tmux, target, ON_EXIT_CMD_FILE_OPT)?),
+            marker: PathBuf::from(show_opt(tmux, target, ON_EXIT_MARKER_OPT)?),
+            log: PathBuf::from(show_opt(tmux, target, ON_EXIT_LOG_OPT)?),
+        })
+    }
+
+    fn fire(&self, session_name: &str, exit_status: Option<i32>) {
+        if !claim_marker(&self.marker) {
+            return;
+        }
+        let command = match std::fs::read_to_string(&self.command_file) {
+            Ok(command) => command,
+            Err(e) => {
+                append_hook_log(
+                    &self.log,
+                    &format!("reading hook command for {session_name}: {e}"),
+                );
+                return;
+            }
+        };
+        let exit_status = exit_status
+            .map(|status| status.to_string())
+            .unwrap_or_default();
+        match Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .env("TPP_SESSION_NAME", session_name)
+            .env("TPP_SESSION", session_name)
+            .env("TPP_EXIT_STATUS", exit_status)
+            .status()
+        {
+            Ok(status) if status.success() => {}
+            Ok(status) => append_hook_log(
+                &self.log,
+                &format!(
+                    "hook failed for {session_name}: exit {}",
+                    status.code().unwrap_or(1)
+                ),
+            ),
+            Err(e) => append_hook_log(&self.log, &format!("running hook for {session_name}: {e}")),
+        }
+    }
+}
+
+/// Fire a stored on-exit hook from tpp-managed teardown, if this session has one.
+pub fn fire_on_exit_hook(tmux: &Tmux, name: &str) {
+    let Some(hook) = StoredOnExitHook::load(tmux, name) else {
+        return;
+    };
+    let exit_status = root_pane_state(tmux, name).and_then(|pane| pane.exit_status);
+    hook.fire(name, exit_status);
+}
+
+fn install_on_exit_hook(tmux: &Tmux, target: &str, hook: &OnExitHook) -> Result<()> {
+    let origin = origin_pane(tmux, target).unwrap_or_else(|| tgt(target));
+    let session_id = tmux.run(["display-message", "-p", "-t", target, "#{session_id}"])?;
+    hook.write_runner(&origin, session_id.trim())?;
+    hook.store_options(tmux, target);
+
+    let pane_hook = format!("pane-died[{}]", hook.hook_index);
+    let pane_command = hook.hook_command(
+        &[
+            "#{hook_pane}",
+            "",
+            "#{session_name}",
+            "#{pane_dead_status}",
+            "#{socket_path}",
+        ],
+        true,
+    );
+    tmux.run(["set-hook", "-w", "-t", target, &pane_hook, &pane_command])?;
+
+    let closed_hook = format!("session-closed[{}]", hook.hook_index);
+    let closed_command = hook.hook_command(
+        &[
+            "",
+            "#{hook_session}",
+            "#{hook_session_name}",
+            "",
+            "#{socket_path}",
+        ],
+        false,
+    );
+    tmux.run(["set-hook", "-g", &closed_hook, &closed_command])?;
+    Ok(())
+}
+
 /// List tpp-managed sessions on the selected tmux socket.
 pub fn list(tmux: &Tmux) -> Result<Vec<SessionInfo>> {
     let fmt = [
@@ -254,6 +540,7 @@ pub struct NewOpts {
     pub command: Vec<String>,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    pub on_exit: Option<OnExitHook>,
 }
 
 /// Create a detached, tpp-tagged session. Caller guarantees the name is free (or uses
@@ -318,6 +605,9 @@ pub fn create(tmux: &Tmux, cfg: &Config, opts: NewOpts) -> Result<String> {
     set_opt(tmux, &target, "@tpp_cmd", &cmd_label);
     set_opt(tmux, &target, "@tpp_created", &now_epoch().to_string());
     stamp_origin_pane(tmux, &target);
+    if let Some(hook) = &opts.on_exit {
+        install_on_exit_hook(tmux, &target, hook)?;
+    }
 
     if !command.is_empty() {
         let mut r: Vec<String> = vec!["respawn-pane".into(), "-k".into(), "-t".into(), target];

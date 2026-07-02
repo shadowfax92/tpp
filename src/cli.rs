@@ -170,6 +170,9 @@ pub struct NewArgs {
     /// Accepted for tmux symmetry; `new` is always detached.
     #[arg(short = 'd', long, hide = true)]
     pub detached: bool,
+    /// Shell command to run once when this session's root command exits.
+    #[arg(long, value_name = "CMD")]
+    pub on_exit: Option<String>,
     /// Command to run (defaults to your shell).
     #[arg(
         trailing_var_arg = true,

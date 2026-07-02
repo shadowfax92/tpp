@@ -93,6 +93,21 @@ fn wait_for_raw_capture(server: &TmuxServer, target: &str, needle: &str) -> Stri
     panic!("raw tmux capture for {target} did not contain {needle:?}:\n{last}");
 }
 
+fn wait_for_file_lines(path: &std::path::Path, count: usize) -> String {
+    let mut last = String::new();
+    for _ in 0..50 {
+        last = std::fs::read_to_string(path).unwrap_or_default();
+        if last.lines().count() >= count {
+            return last;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!(
+        "{} did not reach {count} lines; last contents:\n{last}",
+        path.display()
+    );
+}
+
 fn assert_success(out: &Output) {
     assert!(
         out.status.success(),
@@ -100,6 +115,10 @@ fn assert_success(out: &Output) {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn assert_not_found(out: &Output, session: &str) {
@@ -718,6 +737,182 @@ fn ls_json_reports_alive_state_fields() {
     assert_eq!(dead["state"], "exited");
     assert_eq!(dead["pane_dead"], true);
     assert_eq!(dead["exit_status"], 0);
+}
+
+#[test]
+fn on_exit_hook_fires_once_for_natural_exit() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let hook_file = tmp.path().join("hook-natural");
+    let hook = format!(
+        "printf '%s:%s\\n' \"$TPP_SESSION_NAME\" \"$TPP_EXIT_STATUS\" >> {}",
+        shell_quote(&hook_file.to_string_lossy())
+    );
+
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "new",
+            "-s",
+            "codex/on-exit-natural",
+            "--on-exit",
+            &hook,
+            "--",
+            "sh",
+            "-c",
+            "exit 7",
+        ],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "wait",
+            "-t",
+            "codex/on-exit-natural",
+            "--exit",
+            "--timeout",
+            "5000",
+        ],
+    ));
+
+    let lines = wait_for_file_lines(&hook_file, 1);
+    assert_eq!(
+        lines.lines().collect::<Vec<_>>(),
+        ["tpp/codex/on-exit-natural:7"]
+    );
+
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["rm", "codex/on-exit-natural"],
+    ));
+    std::thread::sleep(Duration::from_millis(200));
+    let lines = std::fs::read_to_string(&hook_file).unwrap();
+    assert_eq!(lines.lines().count(), 1);
+}
+
+#[test]
+fn on_exit_hook_fires_for_tpp_rm() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let hook_file = tmp.path().join("hook-rm");
+    let hook = format!(
+        "printf '%s:%s\\n' \"$TPP_SESSION_NAME\" \"$TPP_EXIT_STATUS\" >> {}",
+        shell_quote(&hook_file.to_string_lossy())
+    );
+
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "new",
+            "-s",
+            "codex/on-exit-rm",
+            "--on-exit",
+            &hook,
+            "--",
+            "sh",
+            "-c",
+            "sleep 30",
+        ],
+    ));
+    assert_success(&run_tpp(&server, tmp.path(), &["rm", "codex/on-exit-rm"]));
+
+    let lines = wait_for_file_lines(&hook_file, 1);
+    assert_eq!(lines.lines().collect::<Vec<_>>(), ["tpp/codex/on-exit-rm:"]);
+}
+
+#[test]
+fn on_exit_hook_fires_for_tpp_exit() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let hook_file = tmp.path().join("hook-exit");
+    let hook = format!(
+        "printf '%s:%s\\n' \"$TPP_SESSION_NAME\" \"$TPP_EXIT_STATUS\" >> {}",
+        shell_quote(&hook_file.to_string_lossy())
+    );
+
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "new",
+            "-s",
+            "codex/on-exit-exit",
+            "--on-exit",
+            &hook,
+            "--",
+            "sh",
+            "-c",
+            "sleep 30",
+        ],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["exit", "codex/on-exit-exit"],
+    ));
+
+    let lines = wait_for_file_lines(&hook_file, 1);
+    assert_eq!(
+        lines.lines().collect::<Vec<_>>(),
+        ["tpp/codex/on-exit-exit:"]
+    );
+}
+
+#[test]
+fn on_exit_hook_fires_for_raw_tmux_kill_session() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let hook_file = tmp.path().join("hook-raw");
+    let hook = format!(
+        "printf '%s:%s\\n' \"$TPP_SESSION_NAME\" \"$TPP_EXIT_STATUS\" >> {}",
+        shell_quote(&hook_file.to_string_lossy())
+    );
+
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "new",
+            "-s",
+            "codex/on-exit-raw",
+            "--on-exit",
+            &hook,
+            "--",
+            "sh",
+            "-c",
+            "sleep 30",
+        ],
+    ));
+    assert_success(&run_tmux(
+        &server,
+        &["kill-session", "-t", "tpp/codex/on-exit-raw"],
+    ));
+
+    let lines = wait_for_file_lines(&hook_file, 1);
+    assert_eq!(
+        lines.lines().collect::<Vec<_>>(),
+        ["tpp/codex/on-exit-raw:"]
+    );
 }
 
 #[test]
