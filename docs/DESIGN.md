@@ -35,6 +35,13 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
   a single `list-sessions -F` call.
 - **remain-on-exit** is set on every `tpp` session so a finished command leaves its output
   on screen (so `cat`/`tail` still work) instead of vanishing.
+- **Root-pane liveness** is the process state of `@tpp_origin_pane`, not session existence.
+  `has --alive` and `ls --json` use tmux `pane_dead`, `pane_pid`, and `pane_dead_status` so
+  dispatchers can distinguish a lingered dead pane from a running agent.
+- **On-exit hooks** are session-local lifecycle glue for external orchestrators. `new --on-exit`
+  writes the opaque command to private tpp state, installs a root-pane `pane-died` hook plus a
+  guarded global `session-closed` hook, and uses an atomic marker directory to make all paths
+  exactly-once. Hooked sessions force `remain-on-exit` on even if the default config disables it.
 - **Exited records.** `tpp exit` / `tpp rm --record` capture the final scrollback to
   `~/.tpp/data/exited/<socket>/` before killing, so `cat` can replay a dead session
   without crossing tmux sockets and `clear` purges the records. Auto-pruned after
@@ -55,7 +62,8 @@ flags the scripts use onto the same internals (or forward straight to `tmux`).
 
 - `--json` on `ls`, `cat`, `wait`, `run --wait`.
 - `run` prints **only** the session name to stdout; everything else goes to stderr.
-- Stable exit codes: `0` ok · `2` usage · `3` not found · `4` timeout · `1` other.
+- Stable exit codes: `0` ok · `2` usage · `3` not found · `4` timeout · `1` other; `has --alive`
+  uses `1` for exists-but-dead.
 - `-q/--quiet`, idempotent `new -A` (no-op/attach if exists), `has` is exit-code-only.
 - Human-facing omitted-session commands select the sole global session automatically, or use
   external `fzf` when multiple sessions are available. `cat -a` includes every recorded
@@ -69,5 +77,6 @@ checks tmux + prints resolved paths. See `tpp config path|show|edit`.
 
 ## Non-goals (v1)
 
-No standalone PTY/daemon (that's `rmux`'s job). No window/pane layout management (that's
-`layouts`/`tmx`). `tpp` stays focused on session lifecycle + I/O for agents and humans.
+No standalone PTY/daemon (that's `rmux`'s job). No lease/pool ownership; sfmux owns that state.
+No window/pane layout management (that's `layouts`/`tmx`). `tpp` stays focused on session
+lifecycle + I/O for agents and humans.

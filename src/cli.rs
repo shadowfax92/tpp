@@ -170,6 +170,9 @@ pub struct NewArgs {
     /// Accepted for tmux symmetry; `new` is always detached.
     #[arg(short = 'd', long, hide = true)]
     pub detached: bool,
+    /// Shell command to run once when this session's root command exits.
+    #[arg(long, value_name = "CMD")]
+    pub on_exit: Option<String>,
     /// Command to run (defaults to your shell).
     #[arg(
         trailing_var_arg = true,
@@ -327,6 +330,9 @@ pub struct HasArgs {
     /// Session name (tmux-style flag form).
     #[arg(short = 't', long, value_name = "SESSION", conflicts_with = "session")]
     pub target: Option<String>,
+    /// Require the session's root pane process to still be running.
+    #[arg(long)]
+    pub alive: bool,
 }
 
 #[derive(Args, Debug)]

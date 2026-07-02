@@ -94,6 +94,7 @@ complete -c tpp -n "__fish_tpp_using_subcommand r" -s h -l help -d 'Print help'
 complete -c tpp -n "__fish_tpp_using_subcommand r" -s V -l version -d 'Print version'
 complete -c tpp -n "__fish_tpp_using_subcommand new" -s s -l name -d 'Session name (auto-generated from the directory if omitted)' -r
 complete -c tpp -n "__fish_tpp_using_subcommand new" -s c -l dir -d 'Working directory for the session' -r
+complete -c tpp -n "__fish_tpp_using_subcommand new" -l on-exit -d 'Shell command to run once when this session\'s root command exits' -r
 complete -c tpp -n "__fish_tpp_using_subcommand new" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
 complete -c tpp -n "__fish_tpp_using_subcommand new" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
 complete -c tpp -n "__fish_tpp_using_subcommand new" -s A -l attach -d 'OK if it already exists (no-op, exit 0) instead of erroring'
@@ -104,6 +105,7 @@ complete -c tpp -n "__fish_tpp_using_subcommand new" -s h -l help -d 'Print help
 complete -c tpp -n "__fish_tpp_using_subcommand new" -s V -l version -d 'Print version'
 complete -c tpp -n "__fish_tpp_using_subcommand n" -s s -l name -d 'Session name (auto-generated from the directory if omitted)' -r
 complete -c tpp -n "__fish_tpp_using_subcommand n" -s c -l dir -d 'Working directory for the session' -r
+complete -c tpp -n "__fish_tpp_using_subcommand n" -l on-exit -d 'Shell command to run once when this session\'s root command exits' -r
 complete -c tpp -n "__fish_tpp_using_subcommand n" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
 complete -c tpp -n "__fish_tpp_using_subcommand n" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
 complete -c tpp -n "__fish_tpp_using_subcommand n" -s A -l attach -d 'OK if it already exists (no-op, exit 0) instead of erroring'
@@ -188,6 +190,7 @@ complete -c tpp -n "__fish_tpp_using_subcommand paste" -s V -l version -d 'Print
 complete -c tpp -n "__fish_tpp_using_subcommand cat" -s n -l lines -d 'Trailing lines to print (0 = visible screen only; default from config)' -r
 complete -c tpp -n "__fish_tpp_using_subcommand cat" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
 complete -c tpp -n "__fish_tpp_using_subcommand cat" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
+complete -c tpp -n "__fish_tpp_using_subcommand cat" -s a -l all -d 'Include every recorded exited session in the no-argument picker'
 complete -c tpp -n "__fish_tpp_using_subcommand cat" -s e -l escape -d 'Include escape sequences (colors)'
 complete -c tpp -n "__fish_tpp_using_subcommand cat" -s S -l all-history -d 'Print the entire scrollback'
 complete -c tpp -n "__fish_tpp_using_subcommand cat" -l json -d 'Machine-readable JSON output (where supported)'
@@ -197,6 +200,7 @@ complete -c tpp -n "__fish_tpp_using_subcommand cat" -s V -l version -d 'Print v
 complete -c tpp -n "__fish_tpp_using_subcommand cap" -s n -l lines -d 'Trailing lines to print (0 = visible screen only; default from config)' -r
 complete -c tpp -n "__fish_tpp_using_subcommand cap" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
 complete -c tpp -n "__fish_tpp_using_subcommand cap" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
+complete -c tpp -n "__fish_tpp_using_subcommand cap" -s a -l all -d 'Include every recorded exited session in the no-argument picker'
 complete -c tpp -n "__fish_tpp_using_subcommand cap" -s e -l escape -d 'Include escape sequences (colors)'
 complete -c tpp -n "__fish_tpp_using_subcommand cap" -s S -l all-history -d 'Print the entire scrollback'
 complete -c tpp -n "__fish_tpp_using_subcommand cap" -l json -d 'Machine-readable JSON output (where supported)'
@@ -206,6 +210,7 @@ complete -c tpp -n "__fish_tpp_using_subcommand cap" -s V -l version -d 'Print v
 complete -c tpp -n "__fish_tpp_using_subcommand capture" -s n -l lines -d 'Trailing lines to print (0 = visible screen only; default from config)' -r
 complete -c tpp -n "__fish_tpp_using_subcommand capture" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
 complete -c tpp -n "__fish_tpp_using_subcommand capture" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
+complete -c tpp -n "__fish_tpp_using_subcommand capture" -s a -l all -d 'Include every recorded exited session in the no-argument picker'
 complete -c tpp -n "__fish_tpp_using_subcommand capture" -s e -l escape -d 'Include escape sequences (colors)'
 complete -c tpp -n "__fish_tpp_using_subcommand capture" -s S -l all-history -d 'Print the entire scrollback'
 complete -c tpp -n "__fish_tpp_using_subcommand capture" -l json -d 'Machine-readable JSON output (where supported)'
@@ -300,6 +305,7 @@ complete -c tpp -n "__fish_tpp_using_subcommand clr" -s V -l version -d 'Print v
 complete -c tpp -n "__fish_tpp_using_subcommand has" -s t -l target -d 'Session name (tmux-style flag form)' -r
 complete -c tpp -n "__fish_tpp_using_subcommand has" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
 complete -c tpp -n "__fish_tpp_using_subcommand has" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
+complete -c tpp -n "__fish_tpp_using_subcommand has" -l alive -d 'Require the session\'s root pane process to still be running'
 complete -c tpp -n "__fish_tpp_using_subcommand has" -l json -d 'Machine-readable JSON output (where supported)'
 complete -c tpp -n "__fish_tpp_using_subcommand has" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand has" -s h -l help -d 'Print help'

@@ -20,6 +20,9 @@ agents.
 - **Agent ergonomics:** `run` prints only the session name; stable exit codes (`3` not found,
   `4` timeout); `run --wait` streams to completion and exits with the command's status; `wait`
   on text / idle / pane-exit.
+- **Sfmux lifecycle:** `has --alive` checks the root pane process instead of session existence;
+  `ls --json` includes `state`, `pane_dead`, root `pid`, and `exit_status`; `new --on-exit`
+  runs an exactly-once shell hook for pane exit and teardown paths.
 - **tmux-compat verbs** (`has-session`, `new-session`, `attach-session`, `kill-session`,
   `list-sessions`, `set-buffer`, `paste-buffer`, `send-keys`, `capture-pane`, `x`) so `tpp` is a
   drop-in for `rmux` in `sf-auto-mux` after `s/rmux/tpp/`.

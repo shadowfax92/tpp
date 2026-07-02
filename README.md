@@ -49,6 +49,7 @@ tpp attach api                 # attach (switch-client if you're already in tmux
 tpp cat api                    # print its recent output
 tpp tail api                   # follow it live
 tpp send -t api "rs" -e        # type "rs" + Enter into it
+tpp has api --alive            # 0 only while the root pane process is running
 tpp rm api                     # kill it
 
 # From a script / agent
@@ -68,13 +69,13 @@ Run `tpp <cmd> --help` for full flags. Aliases in parentheses.
 | Command | Does |
 |---|---|
 | `run` (`r`) | Run a command in a new detached session; prints its name. `--wait` streams to completion and exits with the command's status. |
-| `new` (`n`) | Create a detached session (your shell if no command). `-A` = ok if it already exists. |
-| `ls` (`l`, `list`) | List all tpp sessions. `--json`, `-q` names-only, `--exited` includes recorded ones. |
+| `new` (`n`) | Create a detached session (your shell if no command). `--on-exit CMD` runs a shell hook once when the root command exits. `-A` = ok if it already exists. |
+| `ls` (`l`, `list`) | List all tpp sessions. `--json` includes `state`, `pane_dead`, root `pid`, and `exit_status`; `-q` names-only; `--exited` includes recorded ones. |
 | `attach` (`a`) | Attach, or `switch-client` if you're already inside tmux. |
 | `rm` (`kill`) | Kill sessions. `--all` removes every tpp session, `--record` saves output first. |
 | `exit` (`e`) | Record the current session's output, then kill it. Run it from inside the session. |
 | `rename` | Rename a session. |
-| `has` | Exit `0` if a session exists, else `1`. Exact match. |
+| `has` | Exit `0` if a session exists, else `1`. With `--alive`, exit `0` only while the root pane is running, `1` when it has exited, and `3` when missing. Exact match. |
 | `cat` (`cap`) | Print session output. `-n N` trailing lines, `-S` full scrollback, `-e` keep colors, `-a` includes every recorded transcript in the picker, `--json`. Replays the saved transcript if the session has exited. |
 | `tail` (`follow`) | Follow output, printing new lines as they appear. |
 | `wait` | Block until `--text <s>` appears, output is `--idle`, or the pane will `--exit`. `--timeout` (exit `4`), `--json`. |
@@ -88,11 +89,37 @@ scripts work unchanged.
 ## Built for agents
 
 - **`run` prints only the session name** on stdout (hints go to stderr) → `s=$(tpp run -- cmd)`.
-- **Stable exit codes:** `0` ok · `2` usage · `3` not found · `4` timeout · `1` other.
+- **Stable exit codes:** `0` ok · `2` usage · `3` not found · `4` timeout · `1` other. `has --alive` uses `1` for exists-but-dead.
 - **`--json`** on `ls`, `cat`, `wait`, and `run --wait`.
 - **Bracketed paste** delivers a prompt with `/slash` commands and newlines to a TUI exactly as
   written.
 - **Omitted session names** use the sole session, or an `fzf` picker when there are several.
+
+### Agent lifecycle contracts
+
+`tpp has NAME` is existence-only, including sessions kept on screen by `remain-on-exit`.
+Use `tpp has NAME --alive` when a dispatcher needs process truth: it checks the session's
+startup pane and exits `0` only when `pane_dead=0`.
+
+`tpp new --on-exit 'CMD' -- <agent>` runs `CMD` once when the startup pane exits naturally or
+crashes, and also when the session is torn down by `tpp exit`, `tpp rm`, or raw
+`tmux kill-session`. The hook runs with `TPP_SESSION`, `TPP_SESSION_NAME`, and
+`TPP_EXIT_STATUS` in the environment; `TPP_EXIT_STATUS` is empty when tmux does not know a
+status, such as killing a still-running command. Hooked sessions force `remain-on-exit` on so
+the root pane remains inspectable even if the default config disables it. tpp stores a private
+once-marker under its state dir, so later teardown does not double-fire. Hook failures are appended to
+`<state>/hooks/<socket>/on-exit.log` and do not change the tpp command's exit path. A tmux
+server crash or `kill-server` cannot be covered because tmux cannot run hooks after it dies.
+
+For prompt delivery, the supported script pattern is:
+
+```sh
+tpp wait -t "$s" --idle --stable-for 1000 --timeout 30000
+tpp paste -t "$s" -f "$PROMPT_FILE"
+tpp cat "$s" | tail -40
+```
+
+The final `cat` is the receipt: sfmux can check that the pasted tail is visible before moving on.
 
 ## Configuration
 
@@ -123,10 +150,11 @@ timeout_ms = 30000
 
 Every call is `tmux [-L socket] -u <subcommand>`. Sessions are tagged with tmux user-options
 (`@tpp`, `@tpp_dir`, `@tpp_origin_pane`, …) and read back in one `list-sessions` call, so
-`ls` shows every tpp session. Output commands read from the startup pane instead of whatever
-pane is currently active. `remain-on-exit` keeps a finished command's last screen so
-`cat`/`tail` still work; `exit` / `rm --record` snapshot it under
-`~/.tpp/data/exited/<socket>/` before killing.
+`ls` shows every tpp session. Output and liveness commands read from the startup pane instead
+of whatever pane is currently active. `remain-on-exit` keeps a finished command's last screen
+so `cat`/`tail` still work; `exit` / `rm --record` snapshot it under
+`~/.tpp/data/exited/<socket>/` before killing. `--on-exit` hooks are stored under
+`~/.tpp/data/hooks/<socket>/` and guarded with an atomic once-marker.
 
 ## Development
 

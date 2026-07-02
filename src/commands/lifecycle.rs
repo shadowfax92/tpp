@@ -92,6 +92,7 @@ pub fn run(ctx: &Ctx, args: RunArgs) -> Result<()> {
             command: args.command.clone(),
             width: None,
             height: None,
+            on_exit: None,
         },
     )?;
 
@@ -136,6 +137,15 @@ pub fn new(ctx: &Ctx, args: NewArgs) -> Result<()> {
     }
 
     let dir = args.dir.clone().or_else(cwd_string);
+    let store_socket = ctx.tmux.store_socket();
+    let on_exit = args
+        .on_exit
+        .clone()
+        .map(|command| {
+            session::OnExitHook::new(&ctx.paths, store_socket.as_deref(), &name, command)
+        })
+        .transpose()?;
+
     session::create(
         &ctx.tmux,
         &ctx.cfg,
@@ -145,6 +155,7 @@ pub fn new(ctx: &Ctx, args: NewArgs) -> Result<()> {
             command: args.command.clone(),
             width: None,
             height: None,
+            on_exit,
         },
     )?;
 
@@ -159,9 +170,13 @@ pub fn new(ctx: &Ctx, args: NewArgs) -> Result<()> {
 struct LsRow {
     name: String,
     status: String,
+    state: String,
     dir: String,
     command: String,
     age: String,
+    pane_dead: Option<bool>,
+    pid: Option<u32>,
+    exit_status: Option<i32>,
 }
 
 fn humanize_age(secs: i64) -> String {
@@ -186,9 +201,13 @@ pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
         .map(|s| LsRow {
             name: s.name.clone(),
             status: s.status().to_string(),
+            state: s.state().to_string(),
             dir: s.dir.clone(),
             command: s.command.clone(),
             age: humanize_age(now - s.created),
+            pane_dead: Some(s.dead),
+            pid: s.pid,
+            exit_status: s.exit_status,
         })
         .collect();
 
@@ -210,9 +229,13 @@ pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
             rows.push(LsRow {
                 name: rec.name,
                 status: "recorded".to_string(),
+                state: "recorded".to_string(),
                 dir: rec.dir,
                 command: rec.command,
                 age: humanize_age(now - rec.exited_at),
+                pane_dead: None,
+                pid: None,
+                exit_status: None,
             });
         }
     }
@@ -300,8 +323,17 @@ pub fn rm(ctx: &Ctx, args: RmArgs) -> Result<()> {
         if args.record {
             let _ = record_session(ctx, name);
         }
+        let on_exit = session::prepare_on_exit_hook(&ctx.tmux, name);
+        if let Some(hook) = &on_exit {
+            hook.disable_session_closed_hook(&ctx.tmux);
+        }
         match ctx.tmux.run(["kill-session", "-t", &exact(name)]) {
-            Ok(_) => removed += 1,
+            Ok(_) => {
+                if let Some(hook) = on_exit {
+                    hook.fire(name);
+                }
+                removed += 1;
+            }
             Err(e) => eprintln!("tpp: failed to remove {name}: {e}"),
         }
     }
@@ -328,7 +360,15 @@ pub fn exit(ctx: &Ctx, args: ExitArgs) -> Result<()> {
     if !args.no_record {
         let _ = record_session(ctx, &name);
     }
-    let _ = ctx.tmux.run(["kill-session", "-t", &exact(&name)]);
+    let on_exit = session::prepare_on_exit_hook(&ctx.tmux, &name);
+    if let Some(hook) = &on_exit {
+        hook.disable_session_closed_hook(&ctx.tmux);
+    }
+    if ctx.tmux.run(["kill-session", "-t", &exact(&name)]).is_ok() {
+        if let Some(hook) = on_exit {
+            hook.fire(&name);
+        }
+    }
     if !ctx.quiet {
         eprintln!("exited {name}");
     }
@@ -352,6 +392,16 @@ pub fn has(ctx: &Ctx, args: HasArgs) -> Result<()> {
         None => die(2, "usage: tpp has <session>"),
     };
     let name = session::resolve_existing_name(&ctx.tmux, &ctx.cfg, &name);
+    if args.alive {
+        if !session::exists(&ctx.tmux, &name) {
+            std::process::exit(code::NOT_FOUND);
+        }
+        std::process::exit(if session::is_alive(&ctx.tmux, &name) {
+            0
+        } else {
+            1
+        });
+    }
     std::process::exit(if session::exists(&ctx.tmux, &name) {
         0
     } else {
