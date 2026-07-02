@@ -54,16 +54,20 @@ skill already does) and `tpp paste` it:
 # create the detached agent session
 tpp new -s "$SESSION" -c "$WORKTREE" -- "$START"
 
-# wait for the TUI, then paste the prompt verbatim and submit (bracketed paste + Enter)
-sleep "${SF_MUX_READY_DELAY:-30}"
+# wait for the TUI to settle, then paste the prompt verbatim and submit
+tpp wait -t "$SESSION" --idle --stable-for "${SF_MUX_STABLE_FOR_MS:-1000}" --timeout "${SF_MUX_READY_TIMEOUT_MS:-30000}"
 tpp paste -t "$SESSION" -f "$PROMPT_FILE"      # one call replaces set-buffer+paste-buffer+send-keys
+tpp cat "$SESSION" | tail -40                  # receipt: confirm the pasted tail is visible
 
 # hints
 echo "attach:   tpp attach $SESSION"
 ```
 
-Idempotence check: `tpp has "$SESSION"` (exact match — never prefix-matches a longer name).
-Teardown inside the worker: `tpp exit`.
+Existence check: `tpp has "$SESSION"` (exact match — never prefix-matches a longer name).
+Liveness check: `tpp has "$SESSION" --alive` (`0` running, `1` exists-but-dead, `3` missing).
+Lease cleanup: `tpp new --on-exit 'sfmux pool on-session-exit ...' ...` so the hook fires once
+on natural exit, crash, `tpp exit`, `tpp rm`, or raw `tmux kill-session`. Teardown inside the
+worker can still call `tpp exit`; the once-marker prevents a double release.
 
 ## Why bracketed paste matters here
 
@@ -72,6 +76,17 @@ Teardown inside the worker: `tpp exit`.
 in bracketed-paste markers via `tmux paste-buffer -p`, so the TUI receives it as pasted content
 rather than interpreting it keystroke-by-keystroke. Content is staged through a tmux buffer from
 stdin, so there's no shell-arg escaping to mangle quotes, backticks, or `$`.
+
+## Lifecycle hooks
+
+`tpp new --on-exit CMD` is intentionally opaque to tpp: sfmux should bake every lease/worktree
+identifier into `CMD`. tpp also exports `TPP_SESSION`, `TPP_SESSION_NAME`, and
+`TPP_EXIT_STATUS` for convenience. `TPP_EXIT_STATUS` is empty when the command was killed before
+tmux knew a status.
+
+tmux server death and `tmux kill-server` cannot run hooks because the hook runner dies with the
+server. For normal pane exit/crash, `tpp exit`, `tpp rm`, and raw `tmux kill-session`, the hook
+is guarded by a private once-marker under tpp state.
 
 ## Optional: isolate agent sessions on their own socket
 
