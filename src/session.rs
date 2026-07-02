@@ -364,7 +364,7 @@ pub fn root_pane_state(tmux: &Tmux, name: &str) -> Option<PaneState> {
     if let Some(target) = origin_pane(tmux, name) {
         return Some(pane_state_for_target(tmux, &target).unwrap_or_else(missing_root_pane_state));
     }
-    pane_state_for_target(tmux, name)
+    Some(missing_root_pane_state())
 }
 
 /// True when the session exists and its startup pane process has not exited.
@@ -547,7 +547,7 @@ pub fn list(tmux: &Tmux) -> Result<Vec<SessionInfo>> {
             continue;
         }
         let pane_state = if f[7].is_empty() {
-            pane_state_for_target(tmux, f[0])
+            Some(missing_root_pane_state())
         } else {
             Some(pane_state_for_target(tmux, f[7]).unwrap_or_else(missing_root_pane_state))
         };
