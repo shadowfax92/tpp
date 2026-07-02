@@ -879,8 +879,10 @@ fn on_exit_hook_fires_for_tpp_rm() {
     let server = TmuxServer::new();
     let tmp = tempfile::tempdir().unwrap();
     let hook_file = tmp.path().join("hook-rm");
+    let pid_file = tmp.path().join("hook-rm.pid");
     let hook = format!(
-        "printf '%s:%s\\n' \"$TPP_SESSION_NAME\" \"$TPP_EXIT_STATUS\" >> {}",
+        "if ps -p \"$(cat {})\" >/dev/null 2>&1; then state=alive; else state=dead; fi; printf '%s:%s\\n' \"$TPP_SESSION_NAME\" \"$state\" >> {}",
+        shell_quote(&pid_file.to_string_lossy()),
         shell_quote(&hook_file.to_string_lossy())
     );
 
@@ -899,10 +901,35 @@ fn on_exit_hook_fires_for_tpp_rm() {
             "sleep 30",
         ],
     ));
+    let origin = run_tmux(
+        &server,
+        &[
+            "show-option",
+            "-qv",
+            "-t",
+            "tpp/codex/on-exit-rm",
+            "@tpp_origin_pane",
+        ],
+    );
+    assert_success(&origin);
+    let origin = String::from_utf8_lossy(&origin.stdout).trim().to_string();
+    let pid = run_tmux(
+        &server,
+        &["display-message", "-p", "-t", &origin, "#{pane_pid}"],
+    );
+    assert_success(&pid);
+    std::fs::write(
+        &pid_file,
+        String::from_utf8_lossy(&pid.stdout).trim().as_bytes(),
+    )
+    .unwrap();
     assert_success(&run_tpp(&server, tmp.path(), &["rm", "codex/on-exit-rm"]));
 
     let lines = wait_for_file_lines(&hook_file, 1);
-    assert_eq!(lines.lines().collect::<Vec<_>>(), ["tpp/codex/on-exit-rm:"]);
+    assert_eq!(
+        lines.lines().collect::<Vec<_>>(),
+        ["tpp/codex/on-exit-rm:dead"]
+    );
 }
 
 #[test]
@@ -914,8 +941,10 @@ fn on_exit_hook_fires_for_tpp_exit() {
     let server = TmuxServer::new();
     let tmp = tempfile::tempdir().unwrap();
     let hook_file = tmp.path().join("hook-exit");
+    let pid_file = tmp.path().join("hook-exit.pid");
     let hook = format!(
-        "printf '%s:%s\\n' \"$TPP_SESSION_NAME\" \"$TPP_EXIT_STATUS\" >> {}",
+        "if ps -p \"$(cat {})\" >/dev/null 2>&1; then state=alive; else state=dead; fi; printf '%s:%s\\n' \"$TPP_SESSION_NAME\" \"$state\" >> {}",
+        shell_quote(&pid_file.to_string_lossy()),
         shell_quote(&hook_file.to_string_lossy())
     );
 
@@ -934,6 +963,28 @@ fn on_exit_hook_fires_for_tpp_exit() {
             "sleep 30",
         ],
     ));
+    let origin = run_tmux(
+        &server,
+        &[
+            "show-option",
+            "-qv",
+            "-t",
+            "tpp/codex/on-exit-exit",
+            "@tpp_origin_pane",
+        ],
+    );
+    assert_success(&origin);
+    let origin = String::from_utf8_lossy(&origin.stdout).trim().to_string();
+    let pid = run_tmux(
+        &server,
+        &["display-message", "-p", "-t", &origin, "#{pane_pid}"],
+    );
+    assert_success(&pid);
+    std::fs::write(
+        &pid_file,
+        String::from_utf8_lossy(&pid.stdout).trim().as_bytes(),
+    )
+    .unwrap();
     assert_success(&run_tpp(
         &server,
         tmp.path(),
@@ -943,8 +994,69 @@ fn on_exit_hook_fires_for_tpp_exit() {
     let lines = wait_for_file_lines(&hook_file, 1);
     assert_eq!(
         lines.lines().collect::<Vec<_>>(),
-        ["tpp/codex/on-exit-exit:"]
+        ["tpp/codex/on-exit-exit:dead"]
     );
+}
+
+#[test]
+fn on_exit_hook_forces_remain_on_exit_for_natural_exit() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let config_dir = tmp.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "[new]\nremain_on_exit = false\n",
+    )
+    .unwrap();
+    let hook_file = tmp.path().join("hook-no-remain");
+    let hook = format!(
+        "printf '%s:%s\\n' \"$TPP_SESSION_NAME\" \"$TPP_EXIT_STATUS\" >> {}",
+        shell_quote(&hook_file.to_string_lossy())
+    );
+
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "new",
+            "-s",
+            "codex/on-exit-no-remain",
+            "--on-exit",
+            &hook,
+            "--",
+            "sh",
+            "-c",
+            "exit 0",
+        ],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "wait",
+            "-t",
+            "codex/on-exit-no-remain",
+            "--exit",
+            "--timeout",
+            "5000",
+        ],
+    ));
+
+    let lines = wait_for_file_lines(&hook_file, 1);
+    assert_eq!(
+        lines.lines().collect::<Vec<_>>(),
+        ["tpp/codex/on-exit-no-remain:0"]
+    );
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["has", "codex/on-exit-no-remain"],
+    ));
 }
 
 #[test]

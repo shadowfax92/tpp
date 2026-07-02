@@ -323,9 +323,17 @@ pub fn rm(ctx: &Ctx, args: RmArgs) -> Result<()> {
         if args.record {
             let _ = record_session(ctx, name);
         }
-        session::fire_on_exit_hook(&ctx.tmux, name);
+        let on_exit = session::prepare_on_exit_hook(&ctx.tmux, name);
+        if let Some(hook) = &on_exit {
+            hook.disable_session_closed_hook(&ctx.tmux);
+        }
         match ctx.tmux.run(["kill-session", "-t", &exact(name)]) {
-            Ok(_) => removed += 1,
+            Ok(_) => {
+                if let Some(hook) = on_exit {
+                    hook.fire(name);
+                }
+                removed += 1;
+            }
             Err(e) => eprintln!("tpp: failed to remove {name}: {e}"),
         }
     }
@@ -352,8 +360,15 @@ pub fn exit(ctx: &Ctx, args: ExitArgs) -> Result<()> {
     if !args.no_record {
         let _ = record_session(ctx, &name);
     }
-    session::fire_on_exit_hook(&ctx.tmux, &name);
-    let _ = ctx.tmux.run(["kill-session", "-t", &exact(&name)]);
+    let on_exit = session::prepare_on_exit_hook(&ctx.tmux, &name);
+    if let Some(hook) = &on_exit {
+        hook.disable_session_closed_hook(&ctx.tmux);
+    }
+    if ctx.tmux.run(["kill-session", "-t", &exact(&name)]).is_ok() {
+        if let Some(hook) = on_exit {
+            hook.fire(&name);
+        }
+    }
     if !ctx.quiet {
         eprintln!("exited {name}");
     }

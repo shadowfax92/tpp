@@ -41,7 +41,7 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
 - **On-exit hooks** are session-local lifecycle glue for external orchestrators. `new --on-exit`
   writes the opaque command to private tpp state, installs a root-pane `pane-died` hook plus a
   guarded global `session-closed` hook, and uses an atomic marker directory to make all paths
-  exactly-once.
+  exactly-once. Hooked sessions force `remain-on-exit` on even if the default config disables it.
 - **Exited records.** `tpp exit` / `tpp rm --record` capture the final scrollback to
   `~/.tpp/data/exited/<socket>/` before killing, so `cat` can replay a dead session
   without crossing tmux sockets and `clear` purges the records. Auto-pruned after

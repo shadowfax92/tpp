@@ -403,6 +403,13 @@ struct StoredOnExitHook {
     command_file: PathBuf,
     marker: PathBuf,
     log: PathBuf,
+    hook_index: String,
+}
+
+/// Cached on-exit metadata that can still run after the tmux session is killed.
+pub struct PreparedOnExitHook {
+    hook: StoredOnExitHook,
+    exit_status: Option<i32>,
 }
 
 impl StoredOnExitHook {
@@ -411,6 +418,7 @@ impl StoredOnExitHook {
             command_file: PathBuf::from(show_opt(tmux, target, ON_EXIT_CMD_FILE_OPT)?),
             marker: PathBuf::from(show_opt(tmux, target, ON_EXIT_MARKER_OPT)?),
             log: PathBuf::from(show_opt(tmux, target, ON_EXIT_LOG_OPT)?),
+            hook_index: show_opt(tmux, target, ON_EXIT_HOOK_INDEX_OPT)?,
         })
     }
 
@@ -452,13 +460,24 @@ impl StoredOnExitHook {
     }
 }
 
-/// Fire a stored on-exit hook from tpp-managed teardown, if this session has one.
-pub fn fire_on_exit_hook(tmux: &Tmux, name: &str) {
-    let Some(hook) = StoredOnExitHook::load(tmux, name) else {
-        return;
-    };
+impl PreparedOnExitHook {
+    /// Remove the raw-kill hook when tpp itself is about to run the post-kill fallback.
+    pub fn disable_session_closed_hook(&self, tmux: &Tmux) {
+        let hook = format!("session-closed[{}]", self.hook.hook_index);
+        let _ = tmux.run(["set-hook", "-gu", &hook]);
+    }
+
+    /// Run the cached hook unless another lifecycle path already claimed its marker.
+    pub fn fire(&self, session_name: &str) {
+        self.hook.fire(session_name, self.exit_status);
+    }
+}
+
+/// Capture hook metadata before teardown so tpp can run a post-kill fallback if needed.
+pub fn prepare_on_exit_hook(tmux: &Tmux, name: &str) -> Option<PreparedOnExitHook> {
+    let hook = StoredOnExitHook::load(tmux, name)?;
     let exit_status = root_pane_state(tmux, name).and_then(|pane| pane.exit_status);
-    hook.fire(name, exit_status);
+    Some(PreparedOnExitHook { hook, exit_status })
 }
 
 fn install_on_exit_hook(tmux: &Tmux, target: &str, hook: &OnExitHook) -> Result<()> {
@@ -599,7 +618,7 @@ pub fn create(tmux: &Tmux, cfg: &Config, opts: NewOpts) -> Result<String> {
     }
     tmux.run(args)?;
 
-    if cfg.new.remain_on_exit {
+    if cfg.new.remain_on_exit || opts.on_exit.is_some() {
         let _ = tmux.run(["set-option", "-t", &target, "-w", "remain-on-exit", "on"]);
     }
     if cfg.new.history_limit > 0 {

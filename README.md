@@ -105,8 +105,9 @@ startup pane and exits `0` only when `pane_dead=0`.
 crashes, and also when the session is torn down by `tpp exit`, `tpp rm`, or raw
 `tmux kill-session`. The hook runs with `TPP_SESSION`, `TPP_SESSION_NAME`, and
 `TPP_EXIT_STATUS` in the environment; `TPP_EXIT_STATUS` is empty when tmux does not know a
-status, such as killing a still-running command. tpp stores a private once-marker under its
-state dir, so later teardown does not double-fire. Hook failures are appended to
+status, such as killing a still-running command. Hooked sessions force `remain-on-exit` on so
+the root pane remains inspectable even if the default config disables it. tpp stores a private
+once-marker under its state dir, so later teardown does not double-fire. Hook failures are appended to
 `<state>/hooks/<socket>/on-exit.log` and do not change the tpp command's exit path. A tmux
 server crash or `kill-server` cannot be covered because tmux cannot run hooks after it dies.
 
