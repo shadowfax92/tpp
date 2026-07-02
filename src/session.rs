@@ -17,6 +17,13 @@ const SEP: char = '\u{1f}';
 const ORIGIN_PANE_OPT: &str = "@tpp_origin_pane";
 
 #[derive(Debug, Clone, Serialize)]
+pub struct PaneState {
+    pub dead: bool,
+    pub pid: Option<u32>,
+    pub exit_status: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct SessionInfo {
     pub name: String,
     pub dir: String,
@@ -24,14 +31,24 @@ pub struct SessionInfo {
     pub created: i64,
     pub attached: bool,
     pub windows: u32,
-    /// The command in the active pane has exited (kept visible by remain-on-exit).
+    /// The command in the startup pane has exited (kept visible by remain-on-exit).
     pub dead: bool,
+    pub pid: Option<u32>,
+    pub exit_status: Option<i32>,
     /// Always present for live sessions; mirrors the `exited` record flag for dead ones.
     #[serde(default)]
     pub exited: bool,
 }
 
 impl SessionInfo {
+    pub fn state(&self) -> &'static str {
+        if self.dead {
+            "exited"
+        } else {
+            "running"
+        }
+    }
+
     pub fn status(&self) -> &'static str {
         if self.dead {
             "exited"
@@ -142,6 +159,41 @@ pub fn stamp_origin_pane(tmux: &Tmux, target: &str) {
     }
 }
 
+fn parse_optional_u32(value: &str) -> Option<u32> {
+    value.trim().parse().ok()
+}
+
+fn parse_optional_i32(value: &str) -> Option<i32> {
+    value.trim().parse().ok()
+}
+
+fn pane_state_for_target(tmux: &Tmux, target: &str) -> Option<PaneState> {
+    let fmt = ["#{pane_dead}", "#{pane_pid}", "#{pane_dead_status}"].join(&SEP.to_string());
+    let raw = tmux
+        .run(["display-message", "-p", "-t", &tgt(target), &fmt])
+        .ok()?;
+    let f: Vec<&str> = raw.split(SEP).collect();
+    if f.len() < 3 {
+        return None;
+    }
+    Some(PaneState {
+        dead: f[0] == "1",
+        pid: parse_optional_u32(f[1]),
+        exit_status: parse_optional_i32(f[2]),
+    })
+}
+
+/// Return process state for the startup pane that defines this tpp session's liveness.
+pub fn root_pane_state(tmux: &Tmux, name: &str) -> Option<PaneState> {
+    let target = origin_pane(tmux, name).unwrap_or_else(|| tgt(name));
+    pane_state_for_target(tmux, &target).or_else(|| pane_state_for_target(tmux, name))
+}
+
+/// True when the session exists and its startup pane process has not exited.
+pub fn is_alive(tmux: &Tmux, name: &str) -> bool {
+    exists(tmux, name) && root_pane_state(tmux, name).is_some_and(|pane| !pane.dead)
+}
+
 /// List tpp-managed sessions on the selected tmux socket.
 pub fn list(tmux: &Tmux) -> Result<Vec<SessionInfo>> {
     let fmt = [
@@ -152,7 +204,7 @@ pub fn list(tmux: &Tmux) -> Result<Vec<SessionInfo>> {
         "#{session_created}",
         "#{session_attached}",
         "#{session_windows}",
-        "#{pane_dead}",
+        "#{@tpp_origin_pane}",
     ]
     .join(&SEP.to_string());
 
@@ -172,8 +224,12 @@ pub fn list(tmux: &Tmux) -> Result<Vec<SessionInfo>> {
             continue;
         }
         if f[1] != "1" {
-            continue; // not a tpp session
+            continue;
         }
+        let pane_target = if f[7].is_empty() { f[0] } else { f[7] };
+        let pane_state =
+            pane_state_for_target(tmux, pane_target).or_else(|| pane_state_for_target(tmux, f[0]));
+        let dead = pane_state.as_ref().map(|pane| pane.dead).unwrap_or(false);
         let s = SessionInfo {
             name: f[0].to_string(),
             dir: f[2].to_string(),
@@ -181,8 +237,10 @@ pub fn list(tmux: &Tmux) -> Result<Vec<SessionInfo>> {
             created: f[4].parse().unwrap_or(0),
             attached: f[5] == "1",
             windows: f[6].parse().unwrap_or(1),
-            dead: f[7] == "1",
-            exited: f[7] == "1",
+            dead,
+            pid: pane_state.as_ref().and_then(|pane| pane.pid),
+            exit_status: pane_state.and_then(|pane| pane.exit_status),
+            exited: dead,
         };
         out.push(s);
     }

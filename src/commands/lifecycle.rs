@@ -159,9 +159,13 @@ pub fn new(ctx: &Ctx, args: NewArgs) -> Result<()> {
 struct LsRow {
     name: String,
     status: String,
+    state: String,
     dir: String,
     command: String,
     age: String,
+    pane_dead: Option<bool>,
+    pid: Option<u32>,
+    exit_status: Option<i32>,
 }
 
 fn humanize_age(secs: i64) -> String {
@@ -186,9 +190,13 @@ pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
         .map(|s| LsRow {
             name: s.name.clone(),
             status: s.status().to_string(),
+            state: s.state().to_string(),
             dir: s.dir.clone(),
             command: s.command.clone(),
             age: humanize_age(now - s.created),
+            pane_dead: Some(s.dead),
+            pid: s.pid,
+            exit_status: s.exit_status,
         })
         .collect();
 
@@ -210,9 +218,13 @@ pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
             rows.push(LsRow {
                 name: rec.name,
                 status: "recorded".to_string(),
+                state: "recorded".to_string(),
                 dir: rec.dir,
                 command: rec.command,
                 age: humanize_age(now - rec.exited_at),
+                pane_dead: None,
+                pid: None,
+                exit_status: None,
             });
         }
     }
@@ -352,6 +364,16 @@ pub fn has(ctx: &Ctx, args: HasArgs) -> Result<()> {
         None => die(2, "usage: tpp has <session>"),
     };
     let name = session::resolve_existing_name(&ctx.tmux, &ctx.cfg, &name);
+    if args.alive {
+        if !session::exists(&ctx.tmux, &name) {
+            std::process::exit(code::NOT_FOUND);
+        }
+        std::process::exit(if session::is_alive(&ctx.tmux, &name) {
+            0
+        } else {
+            1
+        });
+    }
     std::process::exit(if session::exists(&ctx.tmux, &name) {
         0
     } else {

@@ -327,6 +327,9 @@ pub struct HasArgs {
     /// Session name (tmux-style flag form).
     #[arg(short = 't', long, value_name = "SESSION", conflicts_with = "session")]
     pub target: Option<String>,
+    /// Require the session's root pane process to still be running.
+    #[arg(long)]
+    pub alive: bool,
 }
 
 #[derive(Args, Debug)]

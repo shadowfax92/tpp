@@ -117,6 +117,16 @@ fn assert_not_found(out: &Output, session: &str) {
     );
 }
 
+fn assert_exit_code(out: &Output, code: i32) {
+    assert_eq!(
+        out.status.code(),
+        Some(code),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 fn tmux_available() -> bool {
     Command::new("tmux")
         .arg("-V")
@@ -577,6 +587,137 @@ fn cat_uses_original_pane_after_active_window_changes() {
     let stdout = String::from_utf8_lossy(&cat.stdout);
     assert!(stdout.contains("original-output"), "{stdout}");
     assert!(!stdout.contains("other-output"), "{stdout}");
+}
+
+#[test]
+fn alive_check_distinguishes_lingering_dead_sessions() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "new",
+            "-s",
+            "codex/alive-live",
+            "--",
+            "sh",
+            "-c",
+            "printf alive-ready; sleep 5",
+        ],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["wait", "-t", "codex/alive-live", "--text", "alive-ready"],
+    ));
+
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["has", "codex/alive-live", "--alive"],
+    ));
+
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["new", "-s", "codex/alive-dead", "--", "sh", "-c", "exit 0"],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "wait",
+            "-t",
+            "codex/alive-dead",
+            "--exit",
+            "--timeout",
+            "5000",
+        ],
+    ));
+
+    assert_success(&run_tpp(&server, tmp.path(), &["has", "codex/alive-dead"]));
+    assert_exit_code(
+        &run_tpp(&server, tmp.path(), &["has", "codex/alive-dead", "--alive"]),
+        1,
+    );
+    assert_exit_code(
+        &run_tpp(
+            &server,
+            tmp.path(),
+            &["has", "codex/alive-missing", "--alive"],
+        ),
+        3,
+    );
+}
+
+#[test]
+fn ls_json_reports_alive_state_fields() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "new",
+            "-s",
+            "codex/json-live",
+            "--",
+            "sh",
+            "-c",
+            "printf json-live-ready; sleep 5",
+        ],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["wait", "-t", "codex/json-live", "--text", "json-live-ready"],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["new", "-s", "codex/json-dead", "--", "sh", "-c", "exit 0"],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "wait",
+            "-t",
+            "codex/json-dead",
+            "--exit",
+            "--timeout",
+            "5000",
+        ],
+    ));
+
+    let ls = run_tpp(&server, tmp.path(), &["--json", "ls"]);
+    assert_success(&ls);
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&ls.stdout).unwrap();
+    let live = rows
+        .iter()
+        .find(|row| row["name"] == "tpp/codex/json-live")
+        .unwrap();
+    let dead = rows
+        .iter()
+        .find(|row| row["name"] == "tpp/codex/json-dead")
+        .unwrap();
+
+    assert_eq!(live["state"], "running");
+    assert_eq!(live["pane_dead"], false);
+    assert!(live["pid"].as_u64().is_some());
+    assert!(live["exit_status"].is_null());
+    assert_eq!(dead["state"], "exited");
+    assert_eq!(dead["pane_dead"], true);
+    assert_eq!(dead["exit_status"], 0);
 }
 
 #[test]
