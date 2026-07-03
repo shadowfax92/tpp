@@ -56,8 +56,8 @@ tpp new -s "$SESSION" -c "$WORKTREE" -- "$START"
 
 # wait for the TUI to settle, then paste the prompt verbatim and submit
 tpp wait -t "$SESSION" --idle --stable-for "${SF_MUX_STABLE_FOR_MS:-1000}" --timeout "${SF_MUX_READY_TIMEOUT_MS:-30000}"
-tpp paste -t "$SESSION" -f "$PROMPT_FILE"      # one call replaces set-buffer+paste-buffer+send-keys
-tpp cat "$SESSION" | tail -40                  # receipt: confirm the pasted tail is visible
+tpp paste -t "$SESSION" -f "$PROMPT_FILE"      # verifies Claude/Codex did not leave a paste marker
+tpp cat "$SESSION" | tail -40                  # optional debug receipt for logs
 
 # hints
 echo "attach:   tpp attach $SESSION"
@@ -68,6 +68,8 @@ Liveness check: `tpp has "$SESSION" --alive` (`0` running, `1` exists-but-dead, 
 Lease cleanup: `tpp new --on-exit 'sfmux pool on-session-exit ...' ...` so the hook fires once
 on natural exit, crash, `tpp exit`, `tpp rm`, or raw `tmux kill-session`. Teardown inside the
 worker can still call `tpp exit`; the once-marker prevents a double release.
+Delivery check: `tpp paste` exits `5` if `[Pasted Content` or `[Pasted text` remains visible after
+retrying Enter, which means the agent TUI appears to have kept the payload in the composer.
 
 ## Why bracketed paste matters here
 
@@ -76,6 +78,19 @@ worker can still call `tpp exit`; the once-marker prevents a double release.
 in bracketed-paste markers via `tmux paste-buffer -p`, so the TUI receives it as pasted content
 rather than interpreting it keystroke-by-keystroke. Content is staged through a tmux buffer from
 stdin, so there's no shell-arg escaping to mangle quotes, backticks, or `$`.
+
+## Mediator pane pings
+
+For navigator/worker orchestration, bind the navigator or human pane once and send pings to the
+pane name:
+
+```sh
+tpp bind mediator --here --role mediator
+tpp paste -t pane:mediator --stdin
+tpp targets --json
+```
+
+Pane bindings live in tmux as `@tpp_name` and `@tpp_role`, not in sfmux or tpp state files.
 
 ## Lifecycle hooks
 

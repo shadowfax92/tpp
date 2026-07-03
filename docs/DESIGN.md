@@ -23,7 +23,9 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
    Output from sessions that have already exited is replayed from a recorded log.
 4. **Paste into it.** `tpp send`/`tpp paste` deliver input. Multi-line text and TUIs use
    **bracketed paste** (tmux `paste-buffer -p`) so prompts with slashes and newlines go
-   in literally and aren't interpreted.
+   in literally and aren't interpreted. `paste` verifies submission by default.
+5. **Address panes directly.** `tpp bind` names an arbitrary tmux pane using pane
+   user-options. `send`, `paste`, `cat`, and `wait` can target `pane:<name>`.
 
 ## Model
 
@@ -38,6 +40,13 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
 - **Root-pane liveness** is the process state of `@tpp_origin_pane`, not session existence.
   `has --alive` and `ls --json` use tmux `pane_dead`, `pane_pid`, and `pane_dead_status` so
   dispatchers can distinguish a lingered dead pane from a running agent.
+- **Pane targets** are server-wide names stored on panes as `@tpp_name` and `@tpp_role`.
+  `targets` scans `list-panes -a`, so there is no registry to go stale. If duplicate names
+  exist because someone edited pane options manually, v1 resolves the first scan result.
+  Removed panes disappear; panes kept by `remain-on-exit` show `dead` via `pane_dead`.
+- **Verified delivery** captures the delivery target after Enter and looks for Claude/Codex
+  pasted-content markers (`[Pasted Content`, `[Pasted text`). If a marker remains, tpp sends
+  a few extra Enters with short backoff, then exits `5` with the captured tail if still stuck.
 - **On-exit hooks** are session-local lifecycle glue for external orchestrators. `new --on-exit`
   writes the opaque command to private tpp state, installs a root-pane `pane-died` hook plus a
   guarded global `session-closed` hook, and uses an atomic marker directory to make all paths
@@ -50,8 +59,9 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
 ## Command surface
 
 Ergonomic (primary): `run`(r) · `new`(n) · `ls`(l,list) · `attach`(a) · `send`(s) ·
-`paste` · `cat`(cap,capture) · `tail`(follow) · `wait` · `rm`(kill,remove) · `exit`(e,quit) ·
-`clear`(clr) · `has` · `rename` · `config` · `init` · `doctor` · `completions`.
+`paste` · `bind` · `targets` · `unbind` · `cat`(cap,capture) · `tail`(follow) · `wait` ·
+`rm`(kill,remove) · `exit`(e,quit) · `clear`(clr) · `has` · `rename` · `config` · `init` ·
+`doctor` · `completions`.
 
 tmux-compat (hidden; for drop-in replacement of `rmux` in scripts): `has-session` ·
 `new-session` · `attach-session` · `kill-session` · `list-sessions` · `set-buffer` ·
@@ -62,12 +72,13 @@ flags the scripts use onto the same internals (or forward straight to `tmux`).
 
 - `--json` on `ls`, `cat`, `wait`, `run --wait`.
 - `run` prints **only** the session name to stdout; everything else goes to stderr.
-- Stable exit codes: `0` ok · `2` usage · `3` not found · `4` timeout · `1` other; `has --alive`
-  uses `1` for exists-but-dead.
+- Stable exit codes: `0` ok · `2` usage · `3` not found · `4` timeout · `5` unsent paste ·
+  `1` other; `has --alive` uses `1` for exists-but-dead.
 - `-q/--quiet`, idempotent `new -A` (no-op/attach if exists), `has` is exit-code-only.
 - Human-facing omitted-session commands select the sole global session automatically, or use
   external `fzf` when multiple sessions are available. `cat -a` includes every recorded
   transcript in that picker; `tail` and `rm` invoke `fzf --multi`.
+  `pane:<name>` is explicit-only and never appears in the session picker.
 
 ## Config
 
@@ -77,6 +88,7 @@ checks tmux + prints resolved paths. See `tpp config path|show|edit`.
 
 ## Non-goals (v1)
 
-No standalone PTY/daemon (that's `rmux`'s job). No lease/pool ownership; sfmux owns that state.
-No window/pane layout management (that's `layouts`/`tmx`). `tpp` stays focused on session
-lifecycle + I/O for agents and humans.
+No standalone PTY/daemon (that's `rmux`'s job). No pane-target state files; deleted panes cannot
+be reported after tmux forgets them. No lease/pool ownership; sfmux owns that state. No window/pane
+layout management (that's `layouts`/`tmx`). `tpp` stays focused on session lifecycle + I/O for
+agents and humans.

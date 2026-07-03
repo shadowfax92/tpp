@@ -68,6 +68,15 @@ pub enum Cmd {
     /// Paste text into a session verbatim (bracketed) and press Enter.
     Paste(PasteArgs),
 
+    /// Bind a name to a tmux pane.
+    Bind(BindArgs),
+
+    /// Remove a named pane binding.
+    Unbind(UnbindArgs),
+
+    /// List named pane bindings.
+    Targets(TargetsArgs),
+
     /// Print a session's output (live, or replayed if it has already exited).
     #[command(visible_aliases = ["cap", "capture"])]
     Cat(CatArgs),
@@ -221,6 +230,9 @@ pub struct SendArgs {
     /// Press Enter after sending typed text.
     #[arg(short = 'e', long)]
     pub enter: bool,
+    /// After Enter, confirm Claude/Codex did not leave pasted text unsubmitted.
+    #[arg(long)]
+    pub verify: bool,
     /// Text to send (literal unless --keys; use -- before option-looking text).
     #[arg(value_name = "TEXT")]
     pub text: Vec<String>,
@@ -240,13 +252,43 @@ pub struct PasteArgs {
     /// Leave pasted text unsubmitted.
     #[arg(long)]
     pub no_enter: bool,
+    /// Skip Claude/Codex pasted-content submission verification.
+    #[arg(long)]
+    pub no_verify: bool,
     /// Text to paste.
     #[arg(value_name = "TEXT")]
     pub text: Vec<String>,
 }
 
 #[derive(Args, Debug)]
+pub struct BindArgs {
+    /// Pane target name, used as pane:<NAME>.
+    pub name: String,
+    /// Bind the current tmux pane from $TMUX_PANE.
+    #[arg(long, conflicts_with = "pane")]
+    pub here: bool,
+    /// Bind an explicit tmux pane target, such as %5 or sess:1.0.
+    #[arg(long, value_name = "TMUX_TARGET")]
+    pub pane: Option<String>,
+    /// Role metadata stored on the pane.
+    #[arg(long, default_value = "pane", value_name = "ROLE")]
+    pub role: String,
+}
+
+#[derive(Args, Debug)]
+pub struct UnbindArgs {
+    /// Pane target name to remove.
+    pub name: String,
+}
+
+#[derive(Args, Debug)]
+pub struct TargetsArgs {}
+
+#[derive(Args, Debug)]
 pub struct CatArgs {
+    /// Session or pane:<NAME> to print. Positional sessions are still accepted.
+    #[arg(short = 't', long, value_name = "SESSION")]
+    pub target: Option<String>,
     /// Sessions to print (default: the sole session, or a picker).
     #[arg(value_name = "SESSION")]
     pub sessions: Vec<String>,

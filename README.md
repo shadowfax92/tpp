@@ -49,6 +49,8 @@ tpp attach api                 # attach (switch-client if you're already in tmux
 tpp cat api                    # print its recent output
 tpp tail api                   # follow it live
 tpp send -t api "rs" -e        # type "rs" + Enter into it
+tpp bind mediator --pane api --role mediator
+tpp paste -t pane:mediator --stdin
 tpp has api --alive            # 0 only while the root pane process is running
 tpp rm api                     # kill it
 
@@ -79,8 +81,11 @@ Run `tpp <cmd> --help` for full flags. Aliases in parentheses.
 | `cat` (`cap`) | Print session output. `-n N` trailing lines, `-S` full scrollback, `-e` keep colors, `-a` includes every recorded transcript in the picker, `--json`. Replays the saved transcript if the session has exited. |
 | `tail` (`follow`) | Follow output, printing new lines as they appear. |
 | `wait` | Block until `--text <s>` appears, output is `--idle`, or the pane will `--exit`. `--timeout` (exit `4`), `--json`. |
-| `send` (`s`) | Send input: literal `TEXT`, `--file`/`--stdin`, or `--keys` (tmux key names). `-e`/`--enter` appends Enter. |
-| `paste` | Bracketed paste + Enter, so multi-line prompts with slashes and newlines land literally. |
+| `send` (`s`) | Send input: literal `TEXT`, `--file`/`--stdin`, or `--keys` (tmux key names). `-e`/`--enter` appends Enter; `--verify` confirms pasted-content markers disappeared after Enter. |
+| `paste` | Bracketed paste + Enter, so multi-line prompts with slashes and newlines land literally. Verifies submission by default; use `--no-verify` to skip. |
+| `bind` | Bind a name to a tmux pane: `tpp bind mediator --here --role mediator` or `--pane %5`. |
+| `targets` | List named panes with role, pane id, `session:window.pane`, and `live`/`dead` status. Supports `--json`. |
+| `unbind` | Remove a named pane binding. |
 
 Also: `config`, `init`, `doctor`, `completions <shell>`, and hidden tmux-compat verbs
 (`has-session`, `new-session`, `send-keys`, …) that forward straight to `tmux`, so existing tmux
@@ -89,10 +94,11 @@ scripts work unchanged.
 ## Built for agents
 
 - **`run` prints only the session name** on stdout (hints go to stderr) → `s=$(tpp run -- cmd)`.
-- **Stable exit codes:** `0` ok · `2` usage · `3` not found · `4` timeout · `1` other. `has --alive` uses `1` for exists-but-dead.
+- **Stable exit codes:** `0` ok · `2` usage · `3` not found · `4` timeout · `5` pasted content appears unsent · `1` other. `has --alive` uses `1` for exists-but-dead.
 - **`--json`** on `ls`, `cat`, `wait`, and `run --wait`.
 - **Bracketed paste** delivers a prompt with `/slash` commands and newlines to a TUI exactly as
   written.
+- **Pane targets** let scripts address `pane:<name>` for `send`, `paste`, `cat`, and `wait`.
 - **Omitted session names** use the sole session, or an `fzf` picker when there are several.
 
 ### Agent lifecycle contracts
@@ -119,7 +125,25 @@ tpp paste -t "$s" -f "$PROMPT_FILE"
 tpp cat "$s" | tail -40
 ```
 
-The final `cat` is the receipt: sfmux can check that the pasted tail is visible before moving on.
+`paste` verifies submission by default for Claude/Codex-style TUIs: after Enter, tpp captures the
+target and looks for `[Pasted Content` or `[Pasted text` markers. If a marker remains, tpp sends a
+few extra Enters with short backoff. If the marker is still visible, the command exits `5` and prints
+the captured tail. `send --verify` uses the same check after `--enter`; `send --keys` skips it.
+`paste --no-enter` also skips verification because it intentionally leaves text unsubmitted.
+
+Named panes support mediator and ping flows without a registry:
+
+```sh
+tpp bind mediator --here --role mediator
+echo "worker done" | tpp paste -t pane:mediator --stdin
+tpp targets --json
+tpp unbind mediator
+```
+
+Bindings live as tmux pane user-options (`@tpp_name`, `@tpp_role`). Names are server-wide by
+convention; if duplicate pane options are created manually, `pane:<name>` resolves the first match.
+A removed pane cannot be listed without external state, but panes left by `remain-on-exit` show
+`dead` through tmux `pane_dead`.
 
 ## Configuration
 
@@ -150,9 +174,10 @@ timeout_ms = 30000
 
 Every call is `tmux [-L socket] -u <subcommand>`. Sessions are tagged with tmux user-options
 (`@tpp`, `@tpp_dir`, `@tpp_origin_pane`, …) and read back in one `list-sessions` call, so
-`ls` shows every tpp session. Output and liveness commands read from the startup pane instead
-of whatever pane is currently active. `remain-on-exit` keeps a finished command's last screen
-so `cat`/`tail` still work; `exit` / `rm --record` snapshot it under
+`ls` shows every tpp session. Named pane targets are pane user-options and are discovered with
+`list-panes -a`; no state file mirrors them. Output and liveness commands read from the startup pane
+instead of whatever pane is currently active. `remain-on-exit` keeps a finished command's last
+screen so `cat`/`tail` still work; `exit` / `rm --record` snapshot it under
 `~/.tpp/data/exited/<socket>/` before killing. `--on-exit` hooks are stored under
 `~/.tpp/data/hooks/<socket>/` and guarded with an atomic once-marker.
 

@@ -1,6 +1,8 @@
 //! Input and output: `send`, `paste`, `cat`, `tail`, `wait`.
 
 use std::collections::HashSet;
+use std::error::Error;
+use std::fmt;
 use std::io::Read;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -10,13 +12,112 @@ use serde::Serialize;
 
 use crate::cli::{CatArgs, PasteArgs, SendArgs, TailArgs, WaitArgs};
 use crate::commands::{
-    capture, code, last_lines, no_such_session, pane_dead, pane_dead_status, select,
+    capture, code, die, last_lines, no_such_session, pane, pane_dead, pane_dead_status, select,
     trim_trailing_blank, Ctx,
 };
 use crate::output::{paint, print_json, Style};
 use crate::session;
 use crate::store::Store;
 use crate::tmux::{tgt, Tmux};
+
+const VERIFY_CAPTURE_LINES: u32 = 80;
+const VERIFY_TAIL_LINES: usize = 20;
+const VERIFY_RETRIES: usize = 4;
+const VERIFY_SETTLE_MS: u64 = 150;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UnsentDelivery {
+    target: String,
+    tail: String,
+}
+
+impl fmt::Display for UnsentDelivery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "delivery to {} appears unsent; pasted-content marker is still visible:\n{}",
+            self.target, self.tail
+        )
+    }
+}
+
+impl Error for UnsentDelivery {}
+
+#[derive(Debug, Clone)]
+enum IoTarget {
+    Session(String),
+    Pane { name: String, pane_id: String },
+}
+
+impl IoTarget {
+    fn tmux_target(&self) -> &str {
+        match self {
+            IoTarget::Session(name) => name,
+            IoTarget::Pane { pane_id, .. } => pane_id,
+        }
+    }
+
+    fn display(&self) -> String {
+        match self {
+            IoTarget::Session(name) => name.clone(),
+            IoTarget::Pane { name, .. } => format!("pane:{name}"),
+        }
+    }
+}
+
+fn no_such_pane_target(name: &str) -> ! {
+    die(code::NOT_FOUND, format!("No such pane target pane:{name}"))
+}
+
+fn resolve_pane_target(ctx: &Ctx, name: &str) -> Result<IoTarget> {
+    if let Err(err) = pane::validate_name(name) {
+        die(code::USAGE, err.to_string());
+    }
+    match pane::resolve_bound_pane(&ctx.tmux, name)? {
+        Some(bound) => Ok(IoTarget::Pane {
+            name: bound.name,
+            pane_id: bound.pane_id,
+        }),
+        None => no_such_pane_target(name),
+    }
+}
+
+fn resolve_io_target(ctx: &Ctx, explicit: Option<&str>, action: &str) -> Result<IoTarget> {
+    if let Some(raw) = explicit {
+        if let Some(name) = pane::pane_target_name(raw) {
+            return resolve_pane_target(ctx, name);
+        }
+    }
+    Ok(IoTarget::Session(select::one(ctx, explicit, action)?))
+}
+
+fn target_exists(ctx: &Ctx, target: &IoTarget) -> bool {
+    match target {
+        IoTarget::Session(name) => session::exists(&ctx.tmux, name),
+        IoTarget::Pane { pane_id, .. } => {
+            ctx.tmux
+                .ok(["display-message", "-p", "-t", pane_id, "#{pane_id}"])
+        }
+    }
+}
+
+fn ensure_target_exists(ctx: &Ctx, target: &IoTarget) {
+    match target {
+        IoTarget::Session(name) => {
+            if !session::exists(&ctx.tmux, name) {
+                no_such_session(name);
+            }
+        }
+        IoTarget::Pane { name, pane_id } => {
+            if !ctx
+                .tmux
+                .ok(["display-message", "-p", "-t", pane_id, "#{pane_id}"])
+            {
+                no_such_pane_target(name);
+            }
+        }
+    }
+}
 
 /// Gather the body text for a send/paste from `--file`, `--stdin`, or positional args.
 fn body_text(file: Option<&Path>, stdin: bool, words: &[String]) -> Result<String> {
@@ -43,18 +144,87 @@ fn bracketed_paste(tmux: &Tmux, target: &str, body: &str) -> Result<()> {
     Ok(())
 }
 
-/// Deliver input to a session: literal text, bracketed paste, or raw key names; optionally
-/// followed by Enter.
+fn strip_ansi(text: &str) -> String {
+    let mut stripped = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for escaped in chars.by_ref() {
+                if ('@'..='~').contains(&escaped) {
+                    break;
+                }
+            }
+        } else {
+            stripped.push(ch);
+        }
+    }
+    stripped
+}
+
+fn has_pasted_marker(text: &str) -> bool {
+    text.contains("[Pasted Content") || text.contains("[Pasted text")
+}
+
+fn verify_delay(retry: usize) -> Duration {
+    Duration::from_millis(VERIFY_SETTLE_MS * (retry as u64 + 1))
+}
+
+/// Confirm a bracketed paste marker disappeared after submission, retrying Enter if needed.
+fn verify_submitted<C, E, S>(
+    target_label: &str,
+    mut capture_target: C,
+    mut send_enter: E,
+    sleep: S,
+) -> Result<()>
+where
+    C: FnMut() -> Result<String>,
+    E: FnMut() -> Result<()>,
+    S: Fn(Duration),
+{
+    sleep(verify_delay(0));
+    let mut captured = strip_ansi(&capture_target()?);
+    for retry in 0..VERIFY_RETRIES {
+        if !has_pasted_marker(&captured) {
+            return Ok(());
+        }
+        send_enter()?;
+        sleep(verify_delay(retry + 1));
+        captured = strip_ansi(&capture_target()?);
+    }
+    if has_pasted_marker(&captured) {
+        return Err(UnsentDelivery {
+            target: target_label.to_string(),
+            tail: last_lines(&captured, VERIFY_TAIL_LINES),
+        }
+        .into());
+    }
+    Ok(())
+}
+
+fn handle_delivery_result(result: Result<()>) -> Result<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(err) if err.downcast_ref::<UnsentDelivery>().is_some() => {
+            die(code::UNSENT, err.to_string());
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// Deliver input to a target as literal text, bracketed paste, or raw key names.
 #[allow(clippy::too_many_arguments)]
 fn deliver(
     tmux: &Tmux,
     target: &str,
+    target_label: &str,
     body: &str,
     as_keys: bool,
     key_words: &[String],
     use_paste: bool,
     enter: bool,
     enter_delay_ms: u64,
+    verify: bool,
 ) -> Result<()> {
     if as_keys {
         let mut args: Vec<String> = vec!["send-keys".into(), "-t".into(), tgt(target)];
@@ -73,54 +243,77 @@ fn deliver(
         }
         tmux.run(["send-keys", "-t", &tgt(target), "Enter"])?;
     }
+    if verify {
+        verify_submitted(
+            target_label,
+            || {
+                Ok(capture(
+                    tmux,
+                    target,
+                    Some(VERIFY_CAPTURE_LINES),
+                    true,
+                    false,
+                )?)
+            },
+            || {
+                tmux.run(["send-keys", "-t", &tgt(target), "Enter"])?;
+                Ok(())
+            },
+            std::thread::sleep,
+        )?;
+    }
     Ok(())
 }
 
 pub fn send(ctx: &Ctx, args: SendArgs) -> Result<()> {
-    let target = select::one(ctx, args.target.as_deref(), "send to")?;
-    if !session::exists(&ctx.tmux, &target) {
-        no_such_session(&target);
+    if args.verify && !args.keys && !args.enter {
+        die(code::USAGE, "send --verify requires --enter");
     }
+    let target = resolve_io_target(ctx, args.target.as_deref(), "send to")?;
+    ensure_target_exists(ctx, &target);
     let body = if args.keys {
         String::new()
     } else {
         body_text(args.file.as_deref(), args.stdin, &args.text)?
     };
     let use_paste = args.paste || (ctx.cfg.send.bracketed_paste && body.contains('\n'));
-    deliver(
+    handle_delivery_result(deliver(
         &ctx.tmux,
-        &target,
+        target.tmux_target(),
+        &target.display(),
         &body,
         args.keys,
         &args.text,
         use_paste,
         args.enter,
         ctx.cfg.send.enter_delay_ms,
-    )?;
+        args.verify && !args.keys,
+    ))?;
     if !ctx.quiet {
-        eprintln!("sent to {target}");
+        eprintln!("sent to {}", target.display());
     }
     Ok(())
 }
 
 pub fn paste(ctx: &Ctx, args: PasteArgs) -> Result<()> {
-    let target = select::one(ctx, args.target.as_deref(), "paste into")?;
-    if !session::exists(&ctx.tmux, &target) {
-        no_such_session(&target);
-    }
+    let target = resolve_io_target(ctx, args.target.as_deref(), "paste into")?;
+    ensure_target_exists(ctx, &target);
     let body = body_text(args.file.as_deref(), args.stdin, &args.text)?;
-    deliver(
+    let verify = !args.no_verify && !args.no_enter;
+    handle_delivery_result(deliver(
         &ctx.tmux,
-        &target,
+        target.tmux_target(),
+        &target.display(),
         &body,
         false,
         &[],
         true,
         !args.no_enter,
         ctx.cfg.send.enter_delay_ms,
-    )?;
+        verify,
+    ))?;
     if !ctx.quiet {
-        eprintln!("pasted into {target}");
+        eprintln!("pasted into {}", target.display());
     }
     Ok(())
 }
@@ -135,6 +328,8 @@ struct CatJson {
 struct CatTarget {
     resolved: String,
     raw: Option<String>,
+    display: String,
+    pane_name: Option<String>,
 }
 
 /// Build the implicit `cat` picker from live sessions plus socket-scoped recorded transcripts.
@@ -171,34 +366,86 @@ fn cat_picker_targets(
         select::from_candidates(names, select::SelectionMode::Single, "print")?
             .into_iter()
             .map(|name| CatTarget {
-                resolved: name,
+                resolved: name.clone(),
+                display: name,
                 raw: None,
+                pane_name: None,
             })
             .collect(),
     )
+}
+
+fn cat_explicit_target(ctx: &Ctx, name: &str) -> Result<CatTarget> {
+    if let Some(pane_name) = pane::pane_target_name(name) {
+        let target = resolve_pane_target(ctx, pane_name)?;
+        return Ok(CatTarget {
+            resolved: target.tmux_target().to_string(),
+            raw: None,
+            display: target.display(),
+            pane_name: Some(pane_name.to_string()),
+        });
+    }
+    let resolved = session::resolve_existing_name(&ctx.tmux, &ctx.cfg, name);
+    Ok(CatTarget {
+        resolved: resolved.clone(),
+        raw: Some(tgt(name)),
+        display: resolved,
+        pane_name: None,
+    })
 }
 
 pub fn cat(ctx: &Ctx, args: CatArgs) -> Result<()> {
     let lines = args.lines.unwrap_or(ctx.cfg.capture.lines);
     let store_socket = ctx.tmux.store_socket();
     let store = Store::new(&ctx.paths, store_socket.as_deref());
-    let targets: Vec<CatTarget> = if args.sessions.is_empty() {
+    if args.target.is_some() && !args.sessions.is_empty() {
+        die(
+            code::USAGE,
+            "use either cat -t/--target or positional sessions, not both",
+        );
+    }
+    let explicit = args
+        .target
+        .as_ref()
+        .map(|target| vec![target.clone()])
+        .unwrap_or(args.sessions);
+    let targets: Vec<CatTarget> = if explicit.is_empty() {
         cat_picker_targets(ctx, &store, args.all)?
     } else {
-        args.sessions
+        explicit
             .iter()
-            .map(|name| CatTarget {
-                resolved: session::resolve_existing_name(&ctx.tmux, &ctx.cfg, name),
-                raw: Some(tgt(name)),
-            })
-            .collect()
+            .map(|name| cat_explicit_target(ctx, name))
+            .collect::<Result<Vec<_>>>()?
     };
     let multi = targets.len() > 1;
     let mut json_items = Vec::new();
 
     for target in &targets {
-        let mut display_name = target.resolved.as_str();
-        let (status, output) = if session::exists(&ctx.tmux, &target.resolved) {
+        let mut display_name = target.display.as_str();
+        let (status, output) = if target.pane_name.is_some() {
+            let raw = capture(
+                &ctx.tmux,
+                &target.resolved,
+                Some(lines),
+                args.escape,
+                args.all_history,
+            )
+            .unwrap_or_else(|_| {
+                no_such_pane_target(target.pane_name.as_deref().unwrap_or_default())
+            });
+            let trimmed = trim_trailing_blank(&raw);
+            let out = if args.all_history {
+                trimmed
+            } else {
+                last_lines(&trimmed, lines as usize)
+            };
+            let status = if pane_dead(&ctx.tmux, &target.resolved) {
+                "exited"
+            } else {
+                "running"
+            };
+            (status.to_string(), out)
+        } else if session::exists(&ctx.tmux, &target.resolved) {
             let raw = capture(
                 &ctx.tmux,
                 &target.resolved,
@@ -375,10 +622,8 @@ struct WaitJson {
 /// Block until a condition holds: text appears, output goes idle, or the pane exits. Exits 4
 /// on timeout.
 pub fn wait(ctx: &Ctx, args: WaitArgs) -> Result<()> {
-    let target = select::one(ctx, args.target.as_deref(), "wait on")?;
-    if !session::exists(&ctx.tmux, &target) {
-        no_such_session(&target);
-    }
+    let target = resolve_io_target(ctx, args.target.as_deref(), "wait on")?;
+    ensure_target_exists(ctx, &target);
     let stable_for =
         Duration::from_millis(args.stable_for.unwrap_or(ctx.cfg.wait.stable_for_ms).max(1));
     let timeout_ms = args.timeout.unwrap_or(ctx.cfg.wait.timeout_ms);
@@ -396,10 +641,11 @@ pub fn wait(ctx: &Ctx, args: WaitArgs) -> Result<()> {
     let mut last_change = Instant::now();
 
     let outcome = loop {
-        if args.exit && pane_dead(&ctx.tmux, &target) {
+        if args.exit && pane_dead(&ctx.tmux, target.tmux_target()) {
             break "exited";
         }
-        let cur = capture(&ctx.tmux, &target, Some(400), false, false).unwrap_or_default();
+        let cur =
+            capture(&ctx.tmux, target.tmux_target(), Some(400), false, false).unwrap_or_default();
         if let Some(text) = &args.text {
             if cur.contains(text.as_str()) {
                 break "text";
@@ -411,14 +657,14 @@ pub fn wait(ctx: &Ctx, args: WaitArgs) -> Result<()> {
         } else if want_idle && last_change.elapsed() >= stable_for {
             break "idle";
         }
-        if !session::exists(&ctx.tmux, &target) {
+        if !target_exists(ctx, &target) {
             break "gone";
         }
         if let Some(t) = timeout {
             if start.elapsed() >= t {
                 if ctx.json {
                     print_json(&WaitJson {
-                        session: target.clone(),
+                        session: target.display(),
                         outcome: "timeout".into(),
                         elapsed_ms: start.elapsed().as_millis(),
                     })?;
@@ -433,7 +679,7 @@ pub fn wait(ctx: &Ctx, args: WaitArgs) -> Result<()> {
 
     if ctx.json {
         print_json(&WaitJson {
-            session: target,
+            session: target.display(),
             outcome: outcome.into(),
             elapsed_ms: start.elapsed().as_millis(),
         })?;
@@ -520,7 +766,14 @@ pub fn record_session(ctx: &Ctx, name: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{appended, overlap, recordable_output};
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+    use std::time::Duration;
+
+    use super::{
+        appended, has_pasted_marker, overlap, recordable_output, strip_ansi, verify_submitted,
+        UnsentDelivery,
+    };
 
     #[test]
     fn overlap_finds_suffix_prefix() {
@@ -553,5 +806,99 @@ mod tests {
     #[test]
     fn recordable_output_trims_blank_padding_before_limiting() {
         assert_eq!(recordable_output("1\n2\n\n\n", 10), "1\n2");
+    }
+
+    #[test]
+    fn pasted_marker_detection_ignores_ansi_sequences() {
+        let stripped = strip_ansi("ok\n[Pasted \u{1b}[31mContent 123]\n");
+        assert!(has_pasted_marker(&stripped));
+        assert!(has_pasted_marker("[Pasted text 42]"));
+        assert!(!has_pasted_marker("plain submitted text"));
+    }
+
+    #[test]
+    fn verify_submitted_accepts_clean_capture_without_retry() {
+        let captures = RefCell::new(VecDeque::from(["submitted".to_string()]));
+        let enters = RefCell::new(0);
+        let sleeps = RefCell::new(Vec::new());
+
+        verify_submitted(
+            "pane:agent",
+            || Ok(captures.borrow_mut().pop_front().unwrap()),
+            || {
+                *enters.borrow_mut() += 1;
+                Ok(())
+            },
+            |duration| sleeps.borrow_mut().push(duration),
+        )
+        .unwrap();
+
+        assert_eq!(*enters.borrow(), 0);
+        assert_eq!(*sleeps.borrow(), vec![Duration::from_millis(150)]);
+    }
+
+    #[test]
+    fn verify_submitted_retries_enter_until_marker_disappears() {
+        let captures = RefCell::new(VecDeque::from([
+            "[Pasted Content 99]".to_string(),
+            "submitted".to_string(),
+        ]));
+        let enters = RefCell::new(0);
+        let sleeps = RefCell::new(Vec::new());
+
+        verify_submitted(
+            "pane:agent",
+            || Ok(captures.borrow_mut().pop_front().unwrap()),
+            || {
+                *enters.borrow_mut() += 1;
+                Ok(())
+            },
+            |duration| sleeps.borrow_mut().push(duration),
+        )
+        .unwrap();
+
+        assert_eq!(*enters.borrow(), 1);
+        assert_eq!(
+            *sleeps.borrow(),
+            vec![Duration::from_millis(150), Duration::from_millis(300)]
+        );
+    }
+
+    #[test]
+    fn verify_submitted_reports_unsent_tail_after_retries() {
+        let lines = (1..=25)
+            .map(|n| {
+                if n == 25 {
+                    "line25 [Pasted text 123]".to_string()
+                } else {
+                    format!("line{n}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let captures = RefCell::new(VecDeque::from(vec![lines; 5]));
+        let enters = RefCell::new(0);
+
+        let err = verify_submitted(
+            "pane:agent",
+            || Ok(captures.borrow_mut().pop_front().unwrap()),
+            || {
+                *enters.borrow_mut() += 1;
+                Ok(())
+            },
+            |_| {},
+        )
+        .unwrap_err();
+        let unsent = err.downcast_ref::<UnsentDelivery>().unwrap();
+
+        assert_eq!(*enters.borrow(), 4);
+        assert_eq!(unsent.target, "pane:agent");
+        assert!(unsent.tail.contains("line6"), "{}", unsent.tail);
+        assert!(
+            unsent.tail.contains("line25 [Pasted text 123]"),
+            "{}",
+            unsent.tail
+        );
+        assert!(!unsent.tail.contains("line5\n"), "{}", unsent.tail);
     }
 }

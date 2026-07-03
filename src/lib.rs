@@ -14,7 +14,7 @@ use anyhow::Result;
 use clap::Parser;
 
 use cli::{Cli, Cmd, LsArgs};
-use commands::{compat, io, lifecycle, meta, Ctx};
+use commands::{compat, io, lifecycle, meta, pane, Ctx};
 use config::Config;
 use paths::Paths;
 use store::Store;
@@ -55,6 +55,9 @@ pub fn run() -> Result<()> {
         Cmd::Attach(a) => lifecycle::attach(&ctx, a),
         Cmd::Send(a) => io::send(&ctx, a),
         Cmd::Paste(a) => io::paste(&ctx, a),
+        Cmd::Bind(a) => pane::bind(&ctx, a),
+        Cmd::Unbind(a) => pane::unbind(&ctx, a),
+        Cmd::Targets(a) => pane::targets(&ctx, a),
         Cmd::Cat(a) => io::cat(&ctx, a),
         Cmd::Tail(a) => io::tail(&ctx, a),
         Cmd::Wait(a) => io::wait(&ctx, a),

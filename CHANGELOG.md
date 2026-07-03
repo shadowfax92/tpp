@@ -14,7 +14,8 @@ agents.
 - **Output:** `cat` (`cap`/`capture`), `tail` (`follow`), `wait` — with `--json` and replay of
   recorded exited sessions.
 - **Input:** `send` (`s`) and `paste` — literal text, `--file`/`--stdin`, `--keys`, and
-  bracketed paste for verbatim multi-line content; `--enter` to submit.
+  bracketed paste for verbatim multi-line content; `--enter` to submit. `paste` verifies
+  Claude/Codex pasted-content submission by default, while `send --verify` opts in.
 - **Global session model:** `ls` shows all `tpp` sessions on the selected tmux socket, and
   omitted-target commands use the same global set with sole-session or `fzf` selection.
 - **Agent ergonomics:** `run` prints only the session name; stable exit codes (`3` not found,
@@ -23,6 +24,8 @@ agents.
 - **Sfmux lifecycle:** `has --alive` checks the root pane process instead of session existence;
   `ls --json` includes `state`, `pane_dead`, root `pid`, and `exit_status`; `new --on-exit`
   runs an exactly-once shell hook for pane exit and teardown paths.
+- **Sfmux pane targets:** `bind`, `targets`, and `unbind` name arbitrary tmux panes through pane
+  user-options, and `send`, `paste`, `cat`, and `wait` accept `pane:<name>`.
 - **tmux-compat verbs** (`has-session`, `new-session`, `attach-session`, `kill-session`,
   `list-sessions`, `set-buffer`, `paste-buffer`, `send-keys`, `capture-pane`, `x`) so `tpp` is a
   drop-in for `rmux` in `sf-auto-mux` after `s/rmux/tpp/`.
