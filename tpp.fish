@@ -42,6 +42,9 @@ complete -c tpp -n "__fish_tpp_needs_command" -f -a "a" -d 'Attach to a session 
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "send" -d 'Send typed text (optionally Enter) or keys to a session'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "s" -d 'Send typed text (optionally Enter) or keys to a session'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "paste" -d 'Paste text into a session verbatim (bracketed) and press Enter'
+complete -c tpp -n "__fish_tpp_needs_command" -f -a "bind" -d 'Bind a name to a tmux pane'
+complete -c tpp -n "__fish_tpp_needs_command" -f -a "unbind" -d 'Remove a named pane binding'
+complete -c tpp -n "__fish_tpp_needs_command" -f -a "targets" -d 'List named pane bindings'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "cat" -d 'Print a session\'s output (live, or replayed if it has already exited)'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "cap" -d 'Print a session\'s output (live, or replayed if it has already exited)'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "capture" -d 'Print a session\'s output (live, or replayed if it has already exited)'
@@ -161,6 +164,7 @@ complete -c tpp -n "__fish_tpp_using_subcommand send" -l stdin -d 'Read text fro
 complete -c tpp -n "__fish_tpp_using_subcommand send" -s k -l keys -d 'Interpret args as tmux key names (Enter, C-c, Escape) instead of literal text'
 complete -c tpp -n "__fish_tpp_using_subcommand send" -s p -l paste -d 'Use bracketed paste (verbatim multi-line; good for TUIs)'
 complete -c tpp -n "__fish_tpp_using_subcommand send" -s e -l enter -d 'Press Enter after sending typed text'
+complete -c tpp -n "__fish_tpp_using_subcommand send" -l verify -d 'After Enter, confirm Claude/Codex did not leave pasted text unsubmitted'
 complete -c tpp -n "__fish_tpp_using_subcommand send" -l json -d 'Machine-readable JSON output (where supported)'
 complete -c tpp -n "__fish_tpp_using_subcommand send" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand send" -s h -l help -d 'Print help'
@@ -173,6 +177,7 @@ complete -c tpp -n "__fish_tpp_using_subcommand s" -l stdin -d 'Read text from s
 complete -c tpp -n "__fish_tpp_using_subcommand s" -s k -l keys -d 'Interpret args as tmux key names (Enter, C-c, Escape) instead of literal text'
 complete -c tpp -n "__fish_tpp_using_subcommand s" -s p -l paste -d 'Use bracketed paste (verbatim multi-line; good for TUIs)'
 complete -c tpp -n "__fish_tpp_using_subcommand s" -s e -l enter -d 'Press Enter after sending typed text'
+complete -c tpp -n "__fish_tpp_using_subcommand s" -l verify -d 'After Enter, confirm Claude/Codex did not leave pasted text unsubmitted'
 complete -c tpp -n "__fish_tpp_using_subcommand s" -l json -d 'Machine-readable JSON output (where supported)'
 complete -c tpp -n "__fish_tpp_using_subcommand s" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand s" -s h -l help -d 'Print help'
@@ -183,10 +188,33 @@ complete -c tpp -n "__fish_tpp_using_subcommand paste" -s L -l socket -d 'tmux s
 complete -c tpp -n "__fish_tpp_using_subcommand paste" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
 complete -c tpp -n "__fish_tpp_using_subcommand paste" -l stdin -d 'Read text from stdin'
 complete -c tpp -n "__fish_tpp_using_subcommand paste" -l no-enter -d 'Leave pasted text unsubmitted'
+complete -c tpp -n "__fish_tpp_using_subcommand paste" -l no-verify -d 'Skip Claude/Codex pasted-content submission verification'
 complete -c tpp -n "__fish_tpp_using_subcommand paste" -l json -d 'Machine-readable JSON output (where supported)'
 complete -c tpp -n "__fish_tpp_using_subcommand paste" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand paste" -s h -l help -d 'Print help'
 complete -c tpp -n "__fish_tpp_using_subcommand paste" -s V -l version -d 'Print version'
+complete -c tpp -n "__fish_tpp_using_subcommand bind" -l pane -d 'Bind an explicit tmux pane target, such as %5 or sess:1.0' -r
+complete -c tpp -n "__fish_tpp_using_subcommand bind" -l role -d 'Role metadata stored on the pane' -r
+complete -c tpp -n "__fish_tpp_using_subcommand bind" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
+complete -c tpp -n "__fish_tpp_using_subcommand bind" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
+complete -c tpp -n "__fish_tpp_using_subcommand bind" -l here -d 'Bind the current tmux pane from $TMUX_PANE'
+complete -c tpp -n "__fish_tpp_using_subcommand bind" -l json -d 'Machine-readable JSON output (where supported)'
+complete -c tpp -n "__fish_tpp_using_subcommand bind" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
+complete -c tpp -n "__fish_tpp_using_subcommand bind" -s h -l help -d 'Print help'
+complete -c tpp -n "__fish_tpp_using_subcommand bind" -s V -l version -d 'Print version'
+complete -c tpp -n "__fish_tpp_using_subcommand unbind" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
+complete -c tpp -n "__fish_tpp_using_subcommand unbind" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
+complete -c tpp -n "__fish_tpp_using_subcommand unbind" -l json -d 'Machine-readable JSON output (where supported)'
+complete -c tpp -n "__fish_tpp_using_subcommand unbind" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
+complete -c tpp -n "__fish_tpp_using_subcommand unbind" -s h -l help -d 'Print help'
+complete -c tpp -n "__fish_tpp_using_subcommand unbind" -s V -l version -d 'Print version'
+complete -c tpp -n "__fish_tpp_using_subcommand targets" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
+complete -c tpp -n "__fish_tpp_using_subcommand targets" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
+complete -c tpp -n "__fish_tpp_using_subcommand targets" -l json -d 'Machine-readable JSON output (where supported)'
+complete -c tpp -n "__fish_tpp_using_subcommand targets" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
+complete -c tpp -n "__fish_tpp_using_subcommand targets" -s h -l help -d 'Print help'
+complete -c tpp -n "__fish_tpp_using_subcommand targets" -s V -l version -d 'Print version'
+complete -c tpp -n "__fish_tpp_using_subcommand cat" -s t -l target -d 'Session or pane:<NAME> to print. Positional sessions are still accepted' -r
 complete -c tpp -n "__fish_tpp_using_subcommand cat" -s n -l lines -d 'Trailing lines to print (0 = visible screen only; default from config)' -r
 complete -c tpp -n "__fish_tpp_using_subcommand cat" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
 complete -c tpp -n "__fish_tpp_using_subcommand cat" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
@@ -197,6 +225,7 @@ complete -c tpp -n "__fish_tpp_using_subcommand cat" -l json -d 'Machine-readabl
 complete -c tpp -n "__fish_tpp_using_subcommand cat" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand cat" -s h -l help -d 'Print help'
 complete -c tpp -n "__fish_tpp_using_subcommand cat" -s V -l version -d 'Print version'
+complete -c tpp -n "__fish_tpp_using_subcommand cap" -s t -l target -d 'Session or pane:<NAME> to print. Positional sessions are still accepted' -r
 complete -c tpp -n "__fish_tpp_using_subcommand cap" -s n -l lines -d 'Trailing lines to print (0 = visible screen only; default from config)' -r
 complete -c tpp -n "__fish_tpp_using_subcommand cap" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
 complete -c tpp -n "__fish_tpp_using_subcommand cap" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
@@ -207,6 +236,7 @@ complete -c tpp -n "__fish_tpp_using_subcommand cap" -l json -d 'Machine-readabl
 complete -c tpp -n "__fish_tpp_using_subcommand cap" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand cap" -s h -l help -d 'Print help'
 complete -c tpp -n "__fish_tpp_using_subcommand cap" -s V -l version -d 'Print version'
+complete -c tpp -n "__fish_tpp_using_subcommand capture" -s t -l target -d 'Session or pane:<NAME> to print. Positional sessions are still accepted' -r
 complete -c tpp -n "__fish_tpp_using_subcommand capture" -s n -l lines -d 'Trailing lines to print (0 = visible screen only; default from config)' -r
 complete -c tpp -n "__fish_tpp_using_subcommand capture" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
 complete -c tpp -n "__fish_tpp_using_subcommand capture" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F

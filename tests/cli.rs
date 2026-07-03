@@ -3,6 +3,7 @@
 
 use clap::CommandFactory;
 use clap::Parser;
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -56,6 +57,32 @@ fn run_tpp(server: &TmuxServer, root: &std::path::Path, args: &[&str]) -> Output
         .env("TPP_STATE_DIR", root.join("state"))
         .output()
         .expect("run tpp")
+}
+
+fn run_tpp_stdin(
+    server: &TmuxServer,
+    root: &std::path::Path,
+    args: &[&str],
+    input: &str,
+) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tpp"))
+        .arg("-L")
+        .arg(&server.socket)
+        .args(args)
+        .env("TPP_CONFIG_DIR", root.join("config"))
+        .env("TPP_STATE_DIR", root.join("state"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn tpp");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .expect("write tpp stdin");
+    child.wait_with_output().expect("wait tpp")
 }
 
 fn fake_fzf_path(fake_bin: &std::path::Path, script: &str) -> String {
@@ -229,6 +256,48 @@ fn paste_text_allows_no_enter_after_value() {
             assert!(a.no_enter);
         }
         other => panic!("expected Paste, got {other:?}"),
+    }
+}
+
+#[test]
+fn send_and_paste_parse_verify_flags() {
+    match parse(&["send", "-e", "--verify", "yo"]).cmd {
+        Some(Cmd::Send(a)) => {
+            assert_eq!(a.text, vec!["yo"]);
+            assert!(a.enter);
+            assert!(a.verify);
+        }
+        other => panic!("expected Send, got {other:?}"),
+    }
+
+    match parse(&["paste", "--no-verify", "yo"]).cmd {
+        Some(Cmd::Paste(a)) => {
+            assert_eq!(a.text, vec!["yo"]);
+            assert!(a.no_verify);
+        }
+        other => panic!("expected Paste, got {other:?}"),
+    }
+}
+
+#[test]
+fn pane_target_commands_parse() {
+    match parse(&["bind", "mediator", "--here", "--role", "mediator"]).cmd {
+        Some(Cmd::Bind(a)) => {
+            assert_eq!(a.name, "mediator");
+            assert!(a.here);
+            assert_eq!(a.role, "mediator");
+        }
+        other => panic!("expected Bind, got {other:?}"),
+    }
+
+    assert!(matches!(parse(&["targets"]).cmd, Some(Cmd::Targets(_))));
+    assert!(matches!(
+        parse(&["unbind", "mediator"]).cmd,
+        Some(Cmd::Unbind(_))
+    ));
+    match parse(&["cat", "-t", "pane:mediator"]).cmd {
+        Some(Cmd::Cat(a)) => assert_eq!(a.target.as_deref(), Some("pane:mediator")),
+        other => panic!("expected Cat, got {other:?}"),
     }
 }
 
@@ -606,6 +675,168 @@ fn cat_uses_original_pane_after_active_window_changes() {
     let stdout = String::from_utf8_lossy(&cat.stdout);
     assert!(stdout.contains("original-output"), "{stdout}");
     assert!(!stdout.contains("other-output"), "{stdout}");
+}
+
+#[test]
+fn pane_targets_drive_send_paste_cat_wait_and_targets() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let paste_file = tmp.path().join("pane-paste-output");
+    let paste_cmd = format!(
+        "printf pane-paste > {}",
+        shell_quote(&paste_file.to_string_lossy())
+    );
+
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["new", "-s", "codex/pane-live", "--", "sh"],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "bind",
+            "mediator",
+            "--pane",
+            "tpp/codex/pane-live",
+            "--role",
+            "mediator",
+        ],
+    ));
+
+    let listed = run_tpp(&server, tmp.path(), &["targets", "--json"]);
+    assert_success(&listed);
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&listed.stdout).unwrap();
+    let mediator = rows.iter().find(|row| row["name"] == "mediator").unwrap();
+    assert_eq!(mediator["role"], "mediator");
+    assert_eq!(mediator["status"], "live");
+    assert!(mediator["location"]
+        .as_str()
+        .unwrap()
+        .starts_with("tpp/codex/pane-live:"));
+    assert!(mediator["pane_id"].as_str().unwrap().starts_with('%'));
+
+    assert_success(&run_tpp_stdin(
+        &server,
+        tmp.path(),
+        &["paste", "-t", "pane:mediator", "--stdin"],
+        &paste_cmd,
+    ));
+    assert_eq!(wait_for_file_lines(&paste_file, 1), "pane-paste");
+
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "send",
+            "-t",
+            "pane:mediator",
+            "--verify",
+            "-e",
+            "printf pane-wait",
+        ],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["wait", "-t", "pane:mediator", "--text", "pane-wait"],
+    ));
+
+    let cat = run_tpp(&server, tmp.path(), &["cat", "-t", "pane:mediator"]);
+    assert_success(&cat);
+    assert!(String::from_utf8_lossy(&cat.stdout).contains("pane-wait"));
+
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["new", "-s", "codex/pane-dead", "--", "sh", "-c", "exit 0"],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "wait",
+            "-t",
+            "codex/pane-dead",
+            "--exit",
+            "--timeout",
+            "5000",
+        ],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "bind",
+            "finished",
+            "--pane",
+            "tpp/codex/pane-dead",
+            "--role",
+            "worker",
+        ],
+    ));
+    let listed = run_tpp(&server, tmp.path(), &["targets", "--json"]);
+    assert_success(&listed);
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&listed.stdout).unwrap();
+    let finished = rows.iter().find(|row| row["name"] == "finished").unwrap();
+    assert_eq!(finished["status"], "dead");
+
+    assert_success(&run_tpp(&server, tmp.path(), &["unbind", "mediator"]));
+    let listed = run_tpp(&server, tmp.path(), &["targets", "--json"]);
+    assert_success(&listed);
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&listed.stdout).unwrap();
+    assert!(rows.iter().all(|row| row["name"] != "mediator"));
+}
+
+#[test]
+fn paste_verify_stuck_marker_exits_with_unsent_code() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "new",
+            "-s",
+            "codex/stuck-marker",
+            "--",
+            "sh",
+            "-c",
+            "printf 'ready\\n[Pasted Content stuck]\\n'; sleep 30",
+        ],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "wait",
+            "-t",
+            "codex/stuck-marker",
+            "--text",
+            "Pasted Content stuck",
+            "--timeout",
+            "5000",
+        ],
+    ));
+
+    let out = run_tpp(
+        &server,
+        tmp.path(),
+        &["paste", "-t", "codex/stuck-marker", "hello"],
+    );
+    assert_exit_code(&out, 5);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("appears unsent"), "{stderr}");
+    assert!(stderr.contains("[Pasted Content stuck]"), "{stderr}");
 }
 
 #[test]

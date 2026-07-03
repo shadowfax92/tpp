@@ -4,6 +4,7 @@ pub mod compat;
 pub mod io;
 pub mod lifecycle;
 pub mod meta;
+pub mod pane;
 pub mod select;
 
 use crate::config::Config;
@@ -23,8 +24,10 @@ pub struct Ctx {
 
 /// Process exit codes (documented in the README). clap emits 2 for usage errors itself.
 pub mod code {
+    pub const USAGE: i32 = 2;
     pub const NOT_FOUND: i32 = 3;
     pub const TIMEOUT: i32 = 4;
+    pub const UNSENT: i32 = 5;
 }
 
 /// Print a message to stderr and exit with `code`.
