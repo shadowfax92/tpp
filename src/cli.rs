@@ -212,8 +212,8 @@ pub struct AttachArgs {
 
 #[derive(Args, Debug)]
 pub struct SendArgs {
-    /// Target session (default: the sole session, or a picker).
-    #[arg(short = 't', long, value_name = "SESSION")]
+    /// Target session startup pane or pane:<NAME> (default: sole session or picker).
+    #[arg(short = 't', long, value_name = "TARGET")]
     pub target: Option<String>,
     /// Read text from a file.
     #[arg(short = 'f', long, value_name = "PATH", conflicts_with = "stdin")]
@@ -240,8 +240,8 @@ pub struct SendArgs {
 
 #[derive(Args, Debug)]
 pub struct PasteArgs {
-    /// Target session (default: the sole session, or a picker).
-    #[arg(short = 't', long, value_name = "SESSION")]
+    /// Target session startup pane or pane:<NAME> (default: sole session or picker).
+    #[arg(short = 't', long, value_name = "TARGET")]
     pub target: Option<String>,
     /// Read text from a file.
     #[arg(short = 'f', long, value_name = "PATH", conflicts_with = "stdin")]
@@ -287,7 +287,7 @@ pub struct TargetsArgs {}
 #[derive(Args, Debug)]
 pub struct CatArgs {
     /// Session or pane:<NAME> to print. Positional sessions are still accepted.
-    #[arg(short = 't', long, value_name = "SESSION")]
+    #[arg(short = 't', long, value_name = "TARGET")]
     pub target: Option<String>,
     /// Sessions to print (default: the sole session, or a picker).
     #[arg(value_name = "SESSION")]
@@ -321,8 +321,8 @@ pub struct TailArgs {
 
 #[derive(Args, Debug)]
 pub struct WaitArgs {
-    /// Target session (default: the sole session, or a picker).
-    #[arg(short = 't', long, value_name = "SESSION")]
+    /// Target session startup pane or pane:<NAME> (default: sole session or picker).
+    #[arg(short = 't', long, value_name = "TARGET")]
     pub target: Option<String>,
     /// Wait until this text appears in the pane.
     #[arg(long, value_name = "TEXT")]

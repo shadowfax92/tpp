@@ -23,7 +23,8 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
    Output from sessions that have already exited is replayed from a recorded log.
 4. **Paste into it.** `tpp send`/`tpp paste` deliver input. Multi-line text and TUIs use
    **bracketed paste** (tmux `paste-buffer -p`) so prompts with slashes and newlines go
-   in literally and aren't interpreted. `paste` verifies submission by default.
+   in literally and aren't interpreted. Session targets resolve to the startup pane.
+   `paste` verifies submission by default.
 5. **Address panes directly.** `tpp bind` names an arbitrary tmux pane using pane
    user-options. `send`, `paste`, `cat`, and `wait` can target `pane:<name>`.
 
@@ -33,7 +34,7 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
   selected tmux socket. If a target is omitted, tpp picks the sole session or invokes `fzf`.
 - **Tags** live on the tmux session as user-options: `@tpp=1`, `@tpp_dir`,
   `@tpp_cmd`, `@tpp_created`, `@tpp_origin_pane`. No external index needed for discovery
-  or output targeting — tmux is the source of truth. `ls` reads session metadata back with
+  or pane targeting — tmux is the source of truth. `ls` reads session metadata back with
   a single `list-sessions -F` call.
 - **remain-on-exit** is set on every `tpp` session so a finished command leaves its output
   on screen (so `cat`/`tail` still work) instead of vanishing.

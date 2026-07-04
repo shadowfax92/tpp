@@ -13,7 +13,7 @@ use serde::Serialize;
 use crate::cli::{CatArgs, PasteArgs, SendArgs, TailArgs, WaitArgs};
 use crate::commands::{
     capture, code, die, last_lines, no_such_session, pane, pane_dead, pane_dead_status, select,
-    trim_trailing_blank, Ctx,
+    session_pane_target, trim_trailing_blank, Ctx,
 };
 use crate::output::{paint, print_json, Style};
 use crate::session;
@@ -45,21 +45,21 @@ impl Error for UnsentDelivery {}
 
 #[derive(Debug, Clone)]
 enum IoTarget {
-    Session(String),
+    Session { name: String, pane_target: String },
     Pane { name: String, pane_id: String },
 }
 
 impl IoTarget {
     fn tmux_target(&self) -> &str {
         match self {
-            IoTarget::Session(name) => name,
+            IoTarget::Session { pane_target, .. } => pane_target,
             IoTarget::Pane { pane_id, .. } => pane_id,
         }
     }
 
     fn display(&self) -> String {
         match self {
-            IoTarget::Session(name) => name.clone(),
+            IoTarget::Session { name, .. } => name.clone(),
             IoTarget::Pane { name, .. } => format!("pane:{name}"),
         }
     }
@@ -88,12 +88,14 @@ fn resolve_io_target(ctx: &Ctx, explicit: Option<&str>, action: &str) -> Result<
             return resolve_pane_target(ctx, name);
         }
     }
-    Ok(IoTarget::Session(select::one(ctx, explicit, action)?))
+    let name = select::one(ctx, explicit, action)?;
+    let pane_target = session_pane_target(&ctx.tmux, &name);
+    Ok(IoTarget::Session { name, pane_target })
 }
 
 fn target_exists(ctx: &Ctx, target: &IoTarget) -> bool {
     match target {
-        IoTarget::Session(name) => session::exists(&ctx.tmux, name),
+        IoTarget::Session { name, .. } => session::exists(&ctx.tmux, name),
         IoTarget::Pane { pane_id, .. } => {
             ctx.tmux
                 .ok(["display-message", "-p", "-t", pane_id, "#{pane_id}"])
@@ -103,7 +105,7 @@ fn target_exists(ctx: &Ctx, target: &IoTarget) -> bool {
 
 fn ensure_target_exists(ctx: &Ctx, target: &IoTarget) {
     match target {
-        IoTarget::Session(name) => {
+        IoTarget::Session { name, .. } => {
             if !session::exists(&ctx.tmux, name) {
                 no_such_session(name);
             }
