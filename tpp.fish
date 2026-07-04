@@ -156,7 +156,7 @@ complete -c tpp -n "__fish_tpp_using_subcommand a" -l json -d 'Machine-readable 
 complete -c tpp -n "__fish_tpp_using_subcommand a" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand a" -s h -l help -d 'Print help'
 complete -c tpp -n "__fish_tpp_using_subcommand a" -s V -l version -d 'Print version'
-complete -c tpp -n "__fish_tpp_using_subcommand send" -s t -l target -d 'Target session (default: the sole session, or a picker)' -r
+complete -c tpp -n "__fish_tpp_using_subcommand send" -s t -l target -d 'Target session startup pane or pane:<NAME> (default: sole session or picker)' -r
 complete -c tpp -n "__fish_tpp_using_subcommand send" -s f -l file -d 'Read text from a file' -r -F
 complete -c tpp -n "__fish_tpp_using_subcommand send" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
 complete -c tpp -n "__fish_tpp_using_subcommand send" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
@@ -169,7 +169,7 @@ complete -c tpp -n "__fish_tpp_using_subcommand send" -l json -d 'Machine-readab
 complete -c tpp -n "__fish_tpp_using_subcommand send" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand send" -s h -l help -d 'Print help'
 complete -c tpp -n "__fish_tpp_using_subcommand send" -s V -l version -d 'Print version'
-complete -c tpp -n "__fish_tpp_using_subcommand s" -s t -l target -d 'Target session (default: the sole session, or a picker)' -r
+complete -c tpp -n "__fish_tpp_using_subcommand s" -s t -l target -d 'Target session startup pane or pane:<NAME> (default: sole session or picker)' -r
 complete -c tpp -n "__fish_tpp_using_subcommand s" -s f -l file -d 'Read text from a file' -r -F
 complete -c tpp -n "__fish_tpp_using_subcommand s" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
 complete -c tpp -n "__fish_tpp_using_subcommand s" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
@@ -182,7 +182,7 @@ complete -c tpp -n "__fish_tpp_using_subcommand s" -l json -d 'Machine-readable 
 complete -c tpp -n "__fish_tpp_using_subcommand s" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand s" -s h -l help -d 'Print help'
 complete -c tpp -n "__fish_tpp_using_subcommand s" -s V -l version -d 'Print version'
-complete -c tpp -n "__fish_tpp_using_subcommand paste" -s t -l target -d 'Target session (default: the sole session, or a picker)' -r
+complete -c tpp -n "__fish_tpp_using_subcommand paste" -s t -l target -d 'Target session startup pane or pane:<NAME> (default: sole session or picker)' -r
 complete -c tpp -n "__fish_tpp_using_subcommand paste" -s f -l file -d 'Read text from a file' -r -F
 complete -c tpp -n "__fish_tpp_using_subcommand paste" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
 complete -c tpp -n "__fish_tpp_using_subcommand paste" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
@@ -263,7 +263,7 @@ complete -c tpp -n "__fish_tpp_using_subcommand follow" -l json -d 'Machine-read
 complete -c tpp -n "__fish_tpp_using_subcommand follow" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand follow" -s h -l help -d 'Print help'
 complete -c tpp -n "__fish_tpp_using_subcommand follow" -s V -l version -d 'Print version'
-complete -c tpp -n "__fish_tpp_using_subcommand wait" -s t -l target -d 'Target session (default: the sole session, or a picker)' -r
+complete -c tpp -n "__fish_tpp_using_subcommand wait" -s t -l target -d 'Target session startup pane or pane:<NAME> (default: sole session or picker)' -r
 complete -c tpp -n "__fish_tpp_using_subcommand wait" -l text -d 'Wait until this text appears in the pane' -r
 complete -c tpp -n "__fish_tpp_using_subcommand wait" -l stable-for -d 'Idle threshold in ms (default from config)' -r
 complete -c tpp -n "__fish_tpp_using_subcommand wait" -l timeout -d 'Timeout in ms (default from config; 0 = no timeout)' -r

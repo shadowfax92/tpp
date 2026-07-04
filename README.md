@@ -99,6 +99,7 @@ scripts work unchanged.
 - **Bracketed paste** delivers a prompt with `/slash` commands and newlines to a TUI exactly as
   written.
 - **Pane targets** let scripts address `pane:<name>` for `send`, `paste`, `cat`, and `wait`.
+  Plain session targets use the session's startup pane, even after attaches or new windows.
 - **Omitted session names** use the sole session, or an `fzf` picker when there are several.
 
 ### Agent lifecycle contracts
@@ -175,7 +176,7 @@ timeout_ms = 30000
 Every call is `tmux [-L socket] -u <subcommand>`. Sessions are tagged with tmux user-options
 (`@tpp`, `@tpp_dir`, `@tpp_origin_pane`, …) and read back in one `list-sessions` call, so
 `ls` shows every tpp session. Named pane targets are pane user-options and are discovered with
-`list-panes -a`; no state file mirrors them. Output and liveness commands read from the startup pane
+`list-panes -a`; no state file mirrors them. High-level pane commands use the startup pane
 instead of whatever pane is currently active. `remain-on-exit` keeps a finished command's last
 screen so `cat`/`tail` still work; `exit` / `rm --record` snapshot it under
 `~/.tpp/data/exited/<socket>/` before killing. `--on-exit` hooks are stored under

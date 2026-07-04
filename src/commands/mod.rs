@@ -45,8 +45,8 @@ pub fn no_such_session(name: &str) -> ! {
     die(code::NOT_FOUND, no_such_session_message(name))
 }
 
-/// Resolve the pane tpp output commands should read from.
-fn output_target(tmux: &Tmux, name: &str) -> String {
+/// Resolve a tpp session to the pane high-level commands should operate on.
+pub(crate) fn session_pane_target(tmux: &Tmux, name: &str) -> String {
     session::origin_pane(tmux, name).unwrap_or_else(|| tgt(name))
 }
 
@@ -84,7 +84,7 @@ pub fn capture(
     escape: bool,
     all_history: bool,
 ) -> Result<String, TmuxError> {
-    let target = output_target(tmux, name);
+    let target = session_pane_target(tmux, name);
     let mut args: Vec<String> = vec![
         "capture-pane".into(),
         "-p".into(),
@@ -132,7 +132,7 @@ pub fn pane_dead(tmux: &Tmux, name: &str) -> bool {
         "display-message",
         "-p",
         "-t",
-        &output_target(tmux, name),
+        &session_pane_target(tmux, name),
         "#{pane_dead}",
     ])
     .map(|s| s.trim() == "1")
@@ -145,7 +145,7 @@ pub fn pane_dead_status(tmux: &Tmux, name: &str) -> Option<i32> {
         "display-message",
         "-p",
         "-t",
-        &output_target(tmux, name),
+        &session_pane_target(tmux, name),
         "#{pane_dead_status}",
     ])
     .ok()

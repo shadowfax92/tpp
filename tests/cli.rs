@@ -678,6 +678,76 @@ fn cat_uses_original_pane_after_active_window_changes() {
 }
 
 #[test]
+fn io_commands_use_original_pane_after_active_window_changes() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let origin_input = tmp.path().join("origin-input");
+    let origin_ready = tmp.path().join("origin-ready");
+    let other_input = tmp.path().join("other-input");
+    let origin_cmd = format!(
+        "printf ready > {}; printf origin-ready; while IFS= read -r line; do printf '%s\\n' \"$line\" >> {}; done",
+        shell_quote(&origin_ready.to_string_lossy()),
+        shell_quote(&origin_input.to_string_lossy())
+    );
+    let other_cmd = format!("cat > {}", shell_quote(&other_input.to_string_lossy()));
+
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "new",
+            "-s",
+            "codex/original-io",
+            "--",
+            "sh",
+            "-c",
+            &origin_cmd,
+        ],
+    ));
+    assert_eq!(wait_for_file_lines(&origin_ready, 1), "ready");
+
+    assert_success(&run_tmux(
+        &server,
+        &["new-window", "-t", "tpp/codex/original-io", &other_cmd],
+    ));
+
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "wait",
+            "-t",
+            "codex/original-io",
+            "--text",
+            "origin-ready",
+            "--timeout",
+            "5000",
+        ],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["send", "-t", "codex/original-io", "-e", "send-origin"],
+    ));
+    assert_eq!(wait_for_file_lines(&origin_input, 1), "send-origin\n");
+    assert_success(&run_tpp_stdin(
+        &server,
+        tmp.path(),
+        &["paste", "-t", "codex/original-io", "--stdin"],
+        "paste-origin",
+    ));
+    assert_eq!(
+        wait_for_file_lines(&origin_input, 2),
+        "send-origin\npaste-origin\n"
+    );
+    assert_eq!(std::fs::read_to_string(other_input).unwrap_or_default(), "");
+}
+
+#[test]
 fn pane_targets_drive_send_paste_cat_wait_and_targets() {
     if !tmux_available() {
         return;
@@ -1458,6 +1528,54 @@ fn compat_new_session_cat_uses_original_pane_after_active_window_changes() {
     let stdout = String::from_utf8_lossy(&cat.stdout);
     assert!(stdout.contains("compat-original-output"), "{stdout}");
     assert!(!stdout.contains("compat-other-output"), "{stdout}");
+}
+
+#[test]
+fn compat_send_keys_keeps_tmux_active_pane_targeting() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let origin_input = tmp.path().join("compat-origin-input");
+    let other_input = tmp.path().join("compat-other-input");
+    let origin_cmd = format!("cat > {}", shell_quote(&origin_input.to_string_lossy()));
+    let other_cmd = format!("cat > {}", shell_quote(&other_input.to_string_lossy()));
+
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "new-session",
+            "-d",
+            "-s",
+            "codex/compat-active",
+            &origin_cmd,
+        ],
+    ));
+    assert_success(&run_tmux(
+        &server,
+        &["new-window", "-t", "tpp/codex/compat-active", &other_cmd],
+    ));
+
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "send-keys",
+            "-t",
+            "codex/compat-active",
+            "compat-active",
+            "Enter",
+        ],
+    ));
+
+    assert_eq!(wait_for_file_lines(&other_input, 1), "compat-active\n");
+    assert_eq!(
+        std::fs::read_to_string(origin_input).unwrap_or_default(),
+        ""
+    );
 }
 
 #[test]
