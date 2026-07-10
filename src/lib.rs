@@ -62,6 +62,7 @@ pub fn run() -> Result<()> {
         Cmd::Tail(a) => io::tail(&ctx, a),
         Cmd::Wait(a) => io::wait(&ctx, a),
         Cmd::Rm(a) => lifecycle::rm(&ctx, a),
+        Cmd::Reap(a) => lifecycle::reap(&ctx, a),
         Cmd::Exit(a) => lifecycle::exit(&ctx, a),
         Cmd::Clear => lifecycle::clear(&ctx),
         Cmd::Has(a) => lifecycle::has(&ctx, a),

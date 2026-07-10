@@ -4,9 +4,10 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 pub const DEFAULT_SESSION_PREFIX: &str = "tpp/";
+pub const DEFAULT_REAP_TTL_SECS: u64 = 6 * 60 * 60;
 
 fn default_session_prefix() -> String {
     DEFAULT_SESSION_PREFIX.to_string()
@@ -30,6 +31,7 @@ pub struct Config {
     pub tail: TailCfg,
     pub exit: ExitCfg,
     pub wait: WaitCfg,
+    pub reap: ReapCfg,
     /// Legacy no-op accepted so older config files keep loading after scopes were removed.
     #[serde(rename = "scope", default, skip_serializing)]
     pub legacy_scope: Option<toml::Value>,
@@ -96,6 +98,20 @@ pub struct WaitCfg {
     pub timeout_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DurationCfg {
+    secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ReapCfg {
+    /// Idle threshold for detached live sessions. "0" disables live idle reaping.
+    pub ttl: DurationCfg,
+    /// Record output before killing a reaped session.
+    pub record: bool,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -109,6 +125,7 @@ impl Default for Config {
             tail: TailCfg::default(),
             exit: ExitCfg::default(),
             wait: WaitCfg::default(),
+            reap: ReapCfg::default(),
             legacy_scope: None,
         }
     }
@@ -164,6 +181,122 @@ impl Default for WaitCfg {
         }
     }
 }
+impl Default for ReapCfg {
+    fn default() -> Self {
+        Self {
+            ttl: DurationCfg::from_secs(DEFAULT_REAP_TTL_SECS),
+            record: true,
+        }
+    }
+}
+
+impl Default for DurationCfg {
+    fn default() -> Self {
+        Self::from_secs(0)
+    }
+}
+
+impl DurationCfg {
+    pub const fn from_secs(secs: u64) -> Self {
+        Self { secs }
+    }
+
+    pub fn as_secs(self) -> u64 {
+        self.secs
+    }
+
+    pub fn display(self) -> String {
+        format_duration(self.secs)
+    }
+}
+
+impl Serialize for DurationCfg {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.display())
+    }
+}
+
+impl<'de> Deserialize<'de> for DurationCfg {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct DurationVisitor;
+
+        impl de::Visitor<'_> for DurationVisitor {
+            type Value = DurationCfg;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a duration string like 1h, 90m, 1d, or 0")
+            }
+
+            fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                parse_duration(value).map_err(E::custom)
+            }
+
+            fn visit_string<E>(self, value: String) -> std::result::Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                self.visit_str(&value)
+            }
+        }
+
+        deserializer.deserialize_str(DurationVisitor)
+    }
+}
+
+/// Parse tpp duration config and CLI values.
+pub fn parse_duration(raw: &str) -> std::result::Result<DurationCfg, String> {
+    let raw = raw.trim();
+    if raw.is_empty() || raw == "0" {
+        return Ok(DurationCfg::from_secs(0));
+    }
+
+    let digit_len = raw
+        .char_indices()
+        .take_while(|(_, ch)| ch.is_ascii_digit())
+        .last()
+        .map(|(idx, ch)| idx + ch.len_utf8())
+        .unwrap_or(0);
+    let (number, unit) = raw.split_at(digit_len);
+    let value: u64 = number.parse().map_err(|_| invalid_duration_message(raw))?;
+    if value == 0 {
+        return Err(invalid_duration_message(raw));
+    }
+
+    let multiplier = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 60 * 60,
+        "d" => 24 * 60 * 60,
+        _ => return Err(invalid_duration_message(raw)),
+    };
+    value
+        .checked_mul(multiplier)
+        .map(DurationCfg::from_secs)
+        .ok_or_else(|| invalid_duration_message(raw))
+}
+
+fn invalid_duration_message(raw: &str) -> String {
+    format!("invalid duration {raw:?} (examples: 1h, 90m, 1d, 0)")
+}
+
+fn format_duration(secs: u64) -> String {
+    match secs {
+        0 => "0".to_string(),
+        s if s % 86_400 == 0 => format!("{}d", s / 86_400),
+        s if s % 3_600 == 0 => format!("{}h", s / 3_600),
+        s if s % 60 == 0 => format!("{}m", s / 60),
+        s => format!("{s}s"),
+    }
+}
 
 impl Config {
     /// Load config from `path`, returning defaults if the file does not exist.
@@ -217,11 +350,15 @@ prune_hours = 24         # forget recorded exited sessions after N hours
 [wait]
 stable_for_ms = 750      # output must be unchanged this long to count as "idle"
 timeout_ms = 30000       # default upper bound for `wait`
+
+[reap]
+ttl = "6h"               # reap detached live sessions idle longer than this; "0" disables that
+record = true            # save scrollback before killing a reaped session
 "#;
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, STARTER_CONFIG};
+    use super::{parse_duration, Config, DurationCfg, STARTER_CONFIG};
 
     #[test]
     fn default_session_prefix_is_tpp_path() {
@@ -268,5 +405,42 @@ mod tests {
     #[test]
     fn starter_config_documents_exit_record_lines() {
         assert!(STARTER_CONFIG.contains("record_lines = 1000"));
+    }
+
+    #[test]
+    fn reap_ttl_defaults_to_six_hours() {
+        assert_eq!(Config::default().reap.ttl.as_secs(), 6 * 60 * 60);
+        assert!(Config::default().reap.record);
+    }
+
+    #[test]
+    fn parse_duration_accepts_tpp_units() {
+        assert_eq!(parse_duration("30s").unwrap().as_secs(), 30);
+        assert_eq!(parse_duration("90m").unwrap().as_secs(), 5_400);
+        assert_eq!(parse_duration("6h").unwrap().as_secs(), 21_600);
+        assert_eq!(parse_duration("1d").unwrap().as_secs(), 86_400);
+        assert_eq!(parse_duration("0").unwrap().as_secs(), 0);
+    }
+
+    #[test]
+    fn parse_duration_rejects_invalid_values() {
+        assert!(parse_duration("0h").is_err());
+        assert!(parse_duration("1w").is_err());
+        assert!(parse_duration("soon").is_err());
+    }
+
+    #[test]
+    fn parse_config_reap_section() {
+        let cfg = Config::parse("[reap]\nttl = \"90m\"\nrecord = false\n").unwrap();
+
+        assert_eq!(cfg.reap.ttl, DurationCfg::from_secs(5_400));
+        assert!(!cfg.reap.record);
+    }
+
+    #[test]
+    fn starter_config_documents_reap() {
+        assert!(STARTER_CONFIG.contains("[reap]"));
+        assert!(STARTER_CONFIG.contains("ttl = \"6h\""));
+        assert!(STARTER_CONFIG.contains("record = true"));
     }
 }

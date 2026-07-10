@@ -104,7 +104,7 @@ impl Store {
                     .filter(|rec| !seen.contains(&rec.name)),
             );
         }
-        out.sort_by(|a, b| b.exited_at.cmp(&a.exited_at));
+        out.sort_by_key(|rec| std::cmp::Reverse(rec.exited_at));
         Ok(out)
     }
 

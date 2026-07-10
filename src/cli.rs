@@ -92,6 +92,9 @@ pub enum Cmd {
     #[command(visible_aliases = ["kill", "remove"])]
     Rm(RmArgs),
 
+    /// Remove stale detached sessions.
+    Reap(ReapArgs),
+
     /// Exit the current session: record its output, then kill it.
     #[command(visible_aliases = ["e", "quit"])]
     Exit(ExitArgs),
@@ -352,6 +355,22 @@ pub struct RmArgs {
     /// Record output before killing.
     #[arg(long)]
     pub record: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ReapArgs {
+    /// Show matching sessions without killing them.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Idle threshold override for detached live sessions (examples: 1h, 90m, 1d, 0).
+    #[arg(long, value_name = "DURATION")]
+    pub ttl: Option<String>,
+    /// Record output before killing, overriding config.
+    #[arg(long, conflicts_with = "no_record")]
+    pub record: bool,
+    /// Skip recording output before killing, overriding config.
+    #[arg(long)]
+    pub no_record: bool,
 }
 
 #[derive(Args, Debug)]

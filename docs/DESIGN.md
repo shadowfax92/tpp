@@ -41,6 +41,10 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
 - **Root-pane liveness** is the process state of `@tpp_origin_pane`, not session existence.
   `has --alive` and `ls --json` use tmux `pane_dead`, `pane_pid`, and `pane_dead_status` so
   dispatchers can distinguish a lingered dead pane from a running agent.
+- **Reaping** is config-driven cleanup for stale detached sessions. Attached sessions are skipped.
+  Dead root panes are stale immediately; live sessions are stale only when the startup pane's
+  `window_activity` is older than `[reap] ttl` (default `6h`). Actual removals use the shared
+  lifecycle path, so records and once-only hooks behave like `exit`/`rm`.
 - **Pane targets** are server-wide names stored on panes as `@tpp_name` and `@tpp_role`.
   `targets` scans `list-panes -a`, so there is no registry to go stale. If duplicate names
   exist because someone edited pane options manually, v1 resolves the first scan result.
@@ -61,7 +65,7 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
 
 Ergonomic (primary): `run`(r) · `new`(n) · `ls`(l,list) · `attach`(a) · `send`(s) ·
 `paste` · `bind` · `targets` · `unbind` · `cat`(cap,capture) · `tail`(follow) · `wait` ·
-`rm`(kill,remove) · `exit`(e,quit) · `clear`(clr) · `has` · `rename` · `config` · `init` ·
+`rm`(kill,remove) · `reap` · `exit`(e,quit) · `clear`(clr) · `has` · `rename` · `config` · `init` ·
 `doctor` · `completions`.
 
 tmux-compat (hidden; for drop-in replacement of `rmux` in scripts): `has-session` ·
@@ -85,7 +89,9 @@ flags the scripts use onto the same internals (or forward straight to `tmux`).
 
 `~/.config/tpp/config.toml` (override dir with `$TPP_CONFIG_DIR`). State under
 `~/.tpp/data/` (`$TPP_STATE_DIR`). `tpp init` writes a starter config; `tpp doctor`
-checks tmux + prints resolved paths. See `tpp config path|show|edit`.
+checks tmux + prints resolved paths. `[reap] ttl` accepts `s`, `m`, `h`, and `d` units; `0`
+disables idle live-session reaping while still allowing dead root panes to be cleaned. See
+`tpp config path|show|edit`.
 
 ## Non-goals (v1)
 
