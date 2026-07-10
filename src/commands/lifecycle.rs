@@ -5,11 +5,14 @@ use std::path::Path;
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::cli::{AttachArgs, ExitArgs, HasArgs, LsArgs, NewArgs, RenameArgs, RmArgs, RunArgs};
+use crate::cli::{
+    AttachArgs, ExitArgs, HasArgs, LsArgs, NewArgs, ReapArgs, RenameArgs, RmArgs, RunArgs,
+};
 use crate::commands::io::{record_session, run_wait};
 use crate::commands::{
     code, current_session, die, no_such_session, no_such_session_message, select, Ctx,
 };
+use crate::config::{parse_duration, DurationCfg};
 use crate::output::{paint, print_json, Style};
 use crate::session::{self, now_epoch, NewOpts};
 use crate::store::Store;
@@ -192,6 +195,10 @@ fn humanize_age(secs: i64) -> String {
     }
 }
 
+fn humanize_duration(secs: u64) -> String {
+    humanize_age(secs.min(i64::MAX as u64) as i64)
+}
+
 pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
     let live = session::list(&ctx.tmux)?;
     let now = now_epoch();
@@ -283,6 +290,192 @@ pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct ReapCandidate {
+    name: String,
+    state: String,
+    reason: String,
+    detail: String,
+    last_active_age: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ReapFailure {
+    candidate: ReapCandidate,
+    error: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ReapReport {
+    dry_run: bool,
+    ttl: String,
+    record: bool,
+    matched: Vec<ReapCandidate>,
+    removed: Vec<ReapCandidate>,
+    failed: Vec<ReapFailure>,
+}
+
+fn reap_record_enabled(ctx: &Ctx, args: &ReapArgs) -> bool {
+    if args.record {
+        true
+    } else if args.no_record {
+        false
+    } else {
+        ctx.cfg.reap.record
+    }
+}
+
+fn reap_ttl(ctx: &Ctx, args: &ReapArgs) -> DurationCfg {
+    args.ttl
+        .as_deref()
+        .map(parse_duration)
+        .transpose()
+        .unwrap_or_else(|message| die(code::USAGE, message))
+        .unwrap_or(ctx.cfg.reap.ttl)
+}
+
+/// Choose stale detached sessions from a tmux inventory without mutating tmux.
+fn select_reap_candidates(
+    sessions: &[session::SessionInfo],
+    ttl: DurationCfg,
+    now: i64,
+) -> Vec<ReapCandidate> {
+    let ttl_secs = ttl.as_secs();
+    sessions
+        .iter()
+        .filter(|s| !s.attached)
+        .filter_map(|s| {
+            let last_active = if s.activity > 0 {
+                s.activity
+            } else {
+                s.created
+            };
+            let last_active_age_secs = (now - last_active).max(0) as u64;
+            if s.dead {
+                let detail = s
+                    .exit_status
+                    .map(|status| format!("root pane exited with status {status}"))
+                    .unwrap_or_else(|| "root pane exited".to_string());
+                return Some(ReapCandidate {
+                    name: s.name.clone(),
+                    state: s.state().to_string(),
+                    reason: "exited".to_string(),
+                    detail,
+                    last_active_age: humanize_duration(last_active_age_secs),
+                });
+            }
+            if ttl_secs > 0 && last_active_age_secs >= ttl_secs {
+                return Some(ReapCandidate {
+                    name: s.name.clone(),
+                    state: s.state().to_string(),
+                    reason: "idle".to_string(),
+                    detail: format!(
+                        "last active {} ago (ttl {})",
+                        humanize_duration(last_active_age_secs),
+                        ttl.display()
+                    ),
+                    last_active_age: humanize_duration(last_active_age_secs),
+                });
+            }
+            None
+        })
+        .collect()
+}
+
+/// Kill one session after optional recording while preserving once-only hooks.
+fn remove_session_with_lifecycle(ctx: &Ctx, name: &str, record: bool) -> Result<()> {
+    if record {
+        let _ = record_session(ctx, name);
+    }
+    let on_exit = session::prepare_on_exit_hook(&ctx.tmux, name);
+    if let Some(hook) = &on_exit {
+        hook.disable_session_closed_hook(&ctx.tmux);
+    }
+    ctx.tmux.run(["kill-session", "-t", &exact(name)])?;
+    if let Some(hook) = on_exit {
+        hook.fire(name);
+    }
+    Ok(())
+}
+
+fn print_reap_report(ctx: &Ctx, report: &ReapReport) -> Result<()> {
+    if ctx.json {
+        return print_json(report);
+    }
+
+    let selected = if report.dry_run {
+        &report.matched
+    } else {
+        &report.removed
+    };
+
+    if ctx.quiet {
+        for candidate in selected {
+            println!("{}", candidate.name);
+        }
+    } else if report.matched.is_empty() {
+        println!("No stale tpp sessions matched.");
+    } else if report.dry_run {
+        println!("Would reap {} tpp session(s):", report.matched.len());
+        for candidate in &report.matched {
+            println!(
+                "  {:<28} {:<7} {}",
+                candidate.name, candidate.reason, candidate.detail
+            );
+        }
+    } else {
+        println!("Reaped {} tpp session(s):", report.removed.len());
+        for candidate in &report.removed {
+            println!(
+                "  {:<28} {:<7} {}",
+                candidate.name, candidate.reason, candidate.detail
+            );
+        }
+    }
+
+    if !report.failed.is_empty() {
+        eprintln!("Failed to reap {} tpp session(s):", report.failed.len());
+        for failure in &report.failed {
+            eprintln!("  {:<28} {}", failure.candidate.name, failure.error);
+        }
+    }
+    Ok(())
+}
+
+/// Reap stale sessions through the same teardown path used by `rm` and `exit`.
+pub fn reap(ctx: &Ctx, args: ReapArgs) -> Result<()> {
+    let ttl = reap_ttl(ctx, &args);
+    let record = reap_record_enabled(ctx, &args);
+    let matched = select_reap_candidates(&session::list(&ctx.tmux)?, ttl, now_epoch());
+
+    let mut report = ReapReport {
+        dry_run: args.dry_run,
+        ttl: ttl.display(),
+        record,
+        matched: matched.clone(),
+        removed: Vec::new(),
+        failed: Vec::new(),
+    };
+
+    if !args.dry_run {
+        for candidate in matched {
+            match remove_session_with_lifecycle(ctx, &candidate.name, record) {
+                Ok(()) => report.removed.push(candidate),
+                Err(err) => report.failed.push(ReapFailure {
+                    candidate,
+                    error: err.to_string(),
+                }),
+            }
+        }
+    }
+
+    print_reap_report(ctx, &report)?;
+    if !report.failed.is_empty() {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 pub fn attach(ctx: &Ctx, args: AttachArgs) -> Result<()> {
     let name = select::one(ctx, args.session.as_deref(), "attach to")?;
 
@@ -320,20 +513,8 @@ pub fn rm(ctx: &Ctx, args: RmArgs) -> Result<()> {
             missing = true;
             continue;
         }
-        if args.record {
-            let _ = record_session(ctx, name);
-        }
-        let on_exit = session::prepare_on_exit_hook(&ctx.tmux, name);
-        if let Some(hook) = &on_exit {
-            hook.disable_session_closed_hook(&ctx.tmux);
-        }
-        match ctx.tmux.run(["kill-session", "-t", &exact(name)]) {
-            Ok(_) => {
-                if let Some(hook) = on_exit {
-                    hook.fire(name);
-                }
-                removed += 1;
-            }
+        match remove_session_with_lifecycle(ctx, name, args.record) {
+            Ok(_) => removed += 1,
             Err(e) => eprintln!("tpp: failed to remove {name}: {e}"),
         }
     }
@@ -357,18 +538,7 @@ pub fn exit(ctx: &Ctx, args: ExitArgs) -> Result<()> {
     if !session::exists(&ctx.tmux, &name) {
         no_such_session(&name);
     }
-    if !args.no_record {
-        let _ = record_session(ctx, &name);
-    }
-    let on_exit = session::prepare_on_exit_hook(&ctx.tmux, &name);
-    if let Some(hook) = &on_exit {
-        hook.disable_session_closed_hook(&ctx.tmux);
-    }
-    if ctx.tmux.run(["kill-session", "-t", &exact(&name)]).is_ok() {
-        if let Some(hook) = on_exit {
-            hook.fire(&name);
-        }
-    }
+    remove_session_with_lifecycle(ctx, &name, !args.no_record)?;
     if !ctx.quiet {
         eprintln!("exited {name}");
     }
@@ -435,7 +605,9 @@ pub fn rename(ctx: &Ctx, args: RenameArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{humanize_age, slug};
+    use super::{humanize_age, select_reap_candidates, slug};
+    use crate::config::DurationCfg;
+    use crate::session::SessionInfo;
 
     #[test]
     fn slug_sanitizes() {
@@ -451,5 +623,46 @@ mod tests {
         assert_eq!(humanize_age(120), "2m");
         assert_eq!(humanize_age(7200), "2h");
         assert_eq!(humanize_age(172_800), "2d");
+    }
+
+    fn session(name: &str, activity: i64) -> SessionInfo {
+        SessionInfo {
+            name: name.to_string(),
+            dir: String::new(),
+            command: "sh".to_string(),
+            created: 100,
+            activity,
+            attached: false,
+            windows: 1,
+            dead: false,
+            pid: Some(123),
+            exit_status: None,
+            exited: false,
+        }
+    }
+
+    #[test]
+    fn reap_selection_skips_attached_and_uses_activity() {
+        let mut attached = session("attached", 100);
+        attached.attached = true;
+        let mut dead = session("dead", 990);
+        dead.dead = true;
+        dead.exit_status = Some(0);
+        let recent = session("recent", 990);
+        let old = session("old", 100);
+
+        let selected = select_reap_candidates(
+            &[attached, dead, recent, old],
+            DurationCfg::from_secs(500),
+            1000,
+        );
+        let names: Vec<&str> = selected
+            .iter()
+            .map(|candidate| candidate.name.as_str())
+            .collect();
+
+        assert_eq!(names, vec!["dead", "old"]);
+        assert_eq!(selected[0].reason, "exited");
+        assert_eq!(selected[1].reason, "idle");
     }
 }

@@ -52,6 +52,7 @@ tpp send -t api "rs" -e        # type "rs" + Enter into it
 tpp bind mediator --pane api --role mediator
 tpp paste -t pane:mediator --stdin
 tpp has api --alive            # 0 only while the root pane process is running
+tpp reap --dry-run             # preview stale detached sessions before cleanup
 tpp rm api                     # kill it
 
 # From a script / agent
@@ -75,6 +76,7 @@ Run `tpp <cmd> --help` for full flags. Aliases in parentheses.
 | `ls` (`l`, `list`) | List all tpp sessions. `--json` includes `state`, `pane_dead`, root `pid`, and `exit_status`; `-q` names-only; `--exited` includes recorded ones. |
 | `attach` (`a`) | Attach, or `switch-client` if you're already inside tmux. |
 | `rm` (`kill`) | Kill sessions. `--all` removes every tpp session, `--record` saves output first. |
+| `reap` | Remove stale detached sessions. Dead root panes are stale immediately; live sessions require root-window activity older than `[reap] ttl` (default `6h`). `--dry-run` previews reasons; output is recorded before removal by default. |
 | `exit` (`e`) | Record the current session's output, then kill it. Run it from inside the session. |
 | `rename` | Rename a session. |
 | `has` | Exit `0` if a session exists, else `1`. With `--alive`, exit `0` only while the root pane is running, `1` when it has exited, and `3` when missing. Exact match. |
@@ -117,6 +119,12 @@ the root pane remains inspectable even if the default config disables it. tpp st
 once-marker under its state dir, so later teardown does not double-fire. Hook failures are appended to
 `<state>/hooks/<socket>/on-exit.log` and do not change the tpp command's exit path. A tmux
 server crash or `kill-server` cannot be covered because tmux cannot run hooks after it dies.
+
+`tpp reap` is the conservative cleanup path for stale detached sessions. It never reaps attached
+sessions, reaps dead root panes with an `exited` reason, and reaps live sessions only when the
+startup pane's `window_activity` age exceeds the configured TTL. Actual removal uses the same lifecycle path as
+`rm`/`exit`, so on-exit hooks still fire once and output is recorded before the session is killed
+unless `[reap] record = false` or `--no-record` is passed.
 
 For prompt delivery, the supported script pattern is:
 
@@ -169,6 +177,10 @@ prune_hours = 24         # forget transcripts after N hours
 [wait]
 stable_for_ms = 750      # "idle" = output unchanged this long
 timeout_ms = 30000
+
+[reap]
+ttl = "6h"               # idle threshold for detached live sessions; "0" disables that
+record = true            # save scrollback before killing a reaped session
 ```
 
 ## How it works
@@ -179,7 +191,7 @@ Every call is `tmux [-L socket] -u <subcommand>`. Sessions are tagged with tmux 
 `list-panes -a`; no state file mirrors them. High-level pane commands use the startup pane
 instead of whatever pane is currently active. `remain-on-exit` keeps a finished command's last
 screen so `cat`/`tail` still work; `exit` / `rm --record` snapshot it under
-`~/.tpp/data/exited/<socket>/` before killing. `--on-exit` hooks are stored under
+`~/.tpp/data/exited/<socket>/` before killing, and `reap` records by default. `--on-exit` hooks are stored under
 `~/.tpp/data/hooks/<socket>/` and guarded with an atomic once-marker.
 
 ## Development

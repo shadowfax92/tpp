@@ -30,6 +30,7 @@ pub struct PaneState {
     pub dead: bool,
     pub pid: Option<u32>,
     pub exit_status: Option<i32>,
+    pub activity: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +48,7 @@ pub struct SessionInfo {
     pub dir: String,
     pub command: String,
     pub created: i64,
+    pub activity: i64,
     pub attached: bool,
     pub windows: u32,
     /// The command in the startup pane has exited (kept visible by remain-on-exit).
@@ -331,12 +333,18 @@ fn parse_optional_i32(value: &str) -> Option<i32> {
 }
 
 fn pane_state_for_target(tmux: &Tmux, target: &str) -> Option<PaneState> {
-    let fmt = ["#{pane_dead}", "#{pane_pid}", "#{pane_dead_status}"].join(&SEP.to_string());
+    let fmt = [
+        "#{pane_dead}",
+        "#{pane_pid}",
+        "#{pane_dead_status}",
+        "#{window_activity}",
+    ]
+    .join(&SEP.to_string());
     let raw = tmux
         .run(["display-message", "-p", "-t", &tgt(target), &fmt])
         .ok()?;
     let f: Vec<&str> = raw.split(SEP).collect();
-    if f.len() < 3 {
+    if f.len() < 4 {
         return None;
     }
     let dead = match f[0].trim() {
@@ -348,6 +356,7 @@ fn pane_state_for_target(tmux: &Tmux, target: &str) -> Option<PaneState> {
         dead,
         pid: parse_optional_u32(f[1]),
         exit_status: parse_optional_i32(f[2]),
+        activity: f[3].trim().parse().ok(),
     })
 }
 
@@ -356,6 +365,7 @@ fn missing_root_pane_state() -> PaneState {
         dead: true,
         pid: None,
         exit_status: None,
+        activity: None,
     }
 }
 
@@ -522,6 +532,7 @@ pub fn list(tmux: &Tmux) -> Result<Vec<SessionInfo>> {
         "#{@tpp_dir}",
         "#{@tpp_cmd}",
         "#{session_created}",
+        "#{session_activity}",
         "#{session_attached}",
         "#{session_windows}",
         "#{@tpp_origin_pane}",
@@ -540,25 +551,31 @@ pub fn list(tmux: &Tmux) -> Result<Vec<SessionInfo>> {
             continue;
         }
         let f: Vec<&str> = line.split(SEP).collect();
-        if f.len() < 8 {
+        if f.len() < 9 {
             continue;
         }
         if f[1] != "1" {
             continue;
         }
-        let pane_state = if f[7].is_empty() {
+        let pane_state = if f[8].is_empty() {
             Some(missing_root_pane_state())
         } else {
-            Some(pane_state_for_target(tmux, f[7]).unwrap_or_else(missing_root_pane_state))
+            Some(pane_state_for_target(tmux, f[8]).unwrap_or_else(missing_root_pane_state))
         };
+        let session_activity = f[5].parse().unwrap_or(0);
         let dead = pane_state.as_ref().map(|pane| pane.dead).unwrap_or(false);
         let s = SessionInfo {
             name: f[0].to_string(),
             dir: f[2].to_string(),
             command: f[3].to_string(),
             created: f[4].parse().unwrap_or(0),
-            attached: f[5] == "1",
-            windows: f[6].parse().unwrap_or(1),
+            activity: pane_state
+                .as_ref()
+                .and_then(|pane| pane.activity)
+                .unwrap_or(0)
+                .max(session_activity),
+            attached: f[6] == "1",
+            windows: f[7].parse().unwrap_or(1),
             dead,
             pid: pane_state.as_ref().and_then(|pane| pane.pid),
             exit_status: pane_state.and_then(|pane| pane.exit_status),
@@ -566,7 +583,7 @@ pub fn list(tmux: &Tmux) -> Result<Vec<SessionInfo>> {
         };
         out.push(s);
     }
-    out.sort_by(|a, b| b.created.cmp(&a.created));
+    out.sort_by_key(|s| std::cmp::Reverse(s.created));
     Ok(out)
 }
 

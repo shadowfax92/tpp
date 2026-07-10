@@ -54,6 +54,7 @@ complete -c tpp -n "__fish_tpp_needs_command" -f -a "wait" -d 'Block until text 
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "rm" -d 'Remove (kill) sessions'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "kill" -d 'Remove (kill) sessions'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "remove" -d 'Remove (kill) sessions'
+complete -c tpp -n "__fish_tpp_needs_command" -f -a "reap" -d 'Remove stale detached sessions'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "exit" -d 'Exit the current session: record its output, then kill it'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "e" -d 'Exit the current session: record its output, then kill it'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "quit" -d 'Exit the current session: record its output, then kill it'
@@ -299,6 +300,16 @@ complete -c tpp -n "__fish_tpp_using_subcommand remove" -l json -d 'Machine-read
 complete -c tpp -n "__fish_tpp_using_subcommand remove" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand remove" -s h -l help -d 'Print help'
 complete -c tpp -n "__fish_tpp_using_subcommand remove" -s V -l version -d 'Print version'
+complete -c tpp -n "__fish_tpp_using_subcommand reap" -l ttl -d 'Idle threshold override for detached live sessions (examples: 1h, 90m, 1d, 0)' -r
+complete -c tpp -n "__fish_tpp_using_subcommand reap" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
+complete -c tpp -n "__fish_tpp_using_subcommand reap" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
+complete -c tpp -n "__fish_tpp_using_subcommand reap" -l dry-run -d 'Show matching sessions without killing them'
+complete -c tpp -n "__fish_tpp_using_subcommand reap" -l record -d 'Record output before killing, overriding config'
+complete -c tpp -n "__fish_tpp_using_subcommand reap" -l no-record -d 'Skip recording output before killing, overriding config'
+complete -c tpp -n "__fish_tpp_using_subcommand reap" -l json -d 'Machine-readable JSON output (where supported)'
+complete -c tpp -n "__fish_tpp_using_subcommand reap" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
+complete -c tpp -n "__fish_tpp_using_subcommand reap" -s h -l help -d 'Print help'
+complete -c tpp -n "__fish_tpp_using_subcommand reap" -s V -l version -d 'Print version'
 complete -c tpp -n "__fish_tpp_using_subcommand exit" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
 complete -c tpp -n "__fish_tpp_using_subcommand exit" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
 complete -c tpp -n "__fish_tpp_using_subcommand exit" -l no-record -d 'Don\'t record output before killing'

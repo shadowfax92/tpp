@@ -203,6 +203,29 @@ fn exit_aliases() {
 }
 
 #[test]
+fn reap_parses_flags() {
+    match parse(&["reap", "--dry-run", "--ttl", "90m", "--no-record"]).cmd {
+        Some(Cmd::Reap(a)) => {
+            assert!(a.dry_run);
+            assert_eq!(a.ttl.as_deref(), Some("90m"));
+            assert!(a.no_record);
+        }
+        other => panic!("expected Reap, got {other:?}"),
+    }
+}
+
+#[test]
+fn reap_help_documents_flags() {
+    let help = Cli::try_parse_from(["tpp", "reap", "--help"])
+        .unwrap_err()
+        .to_string();
+
+    assert!(help.contains("--dry-run"));
+    assert!(help.contains("--ttl"));
+    assert!(help.contains("--no-record"));
+}
+
+#[test]
 fn send_short_alias_and_target() {
     match parse(&["s", "-t", "x", "hello"]).cmd {
         Some(Cmd::Send(a)) => {
@@ -1190,6 +1213,140 @@ fn alive_check_treats_absent_origin_metadata_as_not_alive() {
         .unwrap();
     assert_eq!(row["state"], "exited");
     assert_eq!(row["pane_dead"], true);
+}
+
+#[test]
+fn reap_dry_run_reports_dead_session_reason() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["new", "-s", "codex/reap-dead", "--", "sh", "-c", "exit 12"],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "wait",
+            "-t",
+            "codex/reap-dead",
+            "--exit",
+            "--timeout",
+            "5000",
+        ],
+    ));
+
+    let reap = run_tpp(&server, tmp.path(), &["reap", "--dry-run", "--ttl", "0"]);
+    assert_success(&reap);
+    let stdout = String::from_utf8_lossy(&reap.stdout);
+    assert!(stdout.contains("Would reap 1 tpp session"), "{stdout}");
+    assert!(stdout.contains("tpp/codex/reap-dead"), "{stdout}");
+    assert!(stdout.contains("exited"), "{stdout}");
+    assert!(stdout.contains("status 12"), "{stdout}");
+
+    assert_success(&run_tpp(&server, tmp.path(), &["has", "codex/reap-dead"]));
+}
+
+#[test]
+fn reap_preserves_records_and_on_exit_hooks() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let hook_file = tmp.path().join("hook-reap");
+    let hook = format!(
+        "printf '%s:%s\\n' \"$TPP_SESSION_NAME\" \"$TPP_EXIT_STATUS\" >> {}",
+        shell_quote(&hook_file.to_string_lossy())
+    );
+
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "new",
+            "-s",
+            "codex/reap-idle",
+            "--on-exit",
+            &hook,
+            "--",
+            "sh",
+            "-c",
+            "printf reap-record; sleep 30",
+        ],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["wait", "-t", "codex/reap-idle", "--text", "reap-record"],
+    ));
+    std::thread::sleep(Duration::from_millis(1100));
+
+    let reap = run_tpp(&server, tmp.path(), &["reap", "--ttl", "1s"]);
+    assert_success(&reap);
+    let stdout = String::from_utf8_lossy(&reap.stdout);
+    assert!(stdout.contains("Reaped 1 tpp session"), "{stdout}");
+    assert!(stdout.contains("tpp/codex/reap-idle"), "{stdout}");
+    assert!(stdout.contains("idle"), "{stdout}");
+
+    let lines = wait_for_file_lines(&hook_file, 1);
+    assert_eq!(lines.lines().collect::<Vec<_>>(), ["tpp/codex/reap-idle:"]);
+    assert_exit_code(
+        &run_tpp(&server, tmp.path(), &["has", "codex/reap-idle"]),
+        1,
+    );
+
+    let cat = run_tpp(&server, tmp.path(), &["cat", "-S", "codex/reap-idle"]);
+    assert_success(&cat);
+    assert!(String::from_utf8_lossy(&cat.stdout).contains("reap-record"));
+}
+
+#[test]
+fn reap_uses_root_window_activity_not_creation_age() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "new",
+            "-s",
+            "codex/reap-active",
+            "--",
+            "sh",
+            "-c",
+            "sleep 2; printf reap-active; sleep 30",
+        ],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "wait",
+            "-t",
+            "codex/reap-active",
+            "--text",
+            "reap-active",
+            "--timeout",
+            "5000",
+        ],
+    ));
+
+    let reap = run_tpp(&server, tmp.path(), &["reap", "--dry-run", "--ttl", "2s"]);
+    assert_success(&reap);
+    let stdout = String::from_utf8_lossy(&reap.stdout);
+    assert!(!stdout.contains("tpp/codex/reap-active"), "{stdout}");
+    assert_success(&run_tpp(&server, tmp.path(), &["has", "codex/reap-active"]));
 }
 
 #[test]
