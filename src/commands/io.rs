@@ -12,8 +12,8 @@ use serde::Serialize;
 
 use crate::cli::{CatArgs, PasteArgs, SendArgs, TailArgs, WaitArgs};
 use crate::commands::{
-    capture, code, die, last_lines, no_such_session, pane, pane_dead, pane_dead_status, select,
-    session_pane_target, trim_trailing_blank, Ctx,
+    capture, code, die, last_lines, no_such_session, pane, pane_dead, pane_dead_status,
+    require_session_pane_target, select, session_pane_target, trim_trailing_blank, Ctx,
 };
 use crate::output::{paint, print_json, Style};
 use crate::session;
@@ -89,7 +89,7 @@ fn resolve_io_target(ctx: &Ctx, explicit: Option<&str>, action: &str) -> Result<
         }
     }
     let name = select::one(ctx, explicit, action)?;
-    let pane_target = session_pane_target(&ctx.tmux, &name);
+    let pane_target = require_session_pane_target(&ctx.tmux, &name);
     Ok(IoTarget::Session { name, pane_target })
 }
 
@@ -117,6 +117,14 @@ fn ensure_target_exists(ctx: &Ctx, target: &IoTarget) {
             {
                 no_such_pane_target(name);
             }
+        }
+    }
+}
+
+fn ensure_origin_available(ctx: &Ctx, target: &IoTarget) {
+    if let IoTarget::Session { name, .. } = target {
+        if session::exists(&ctx.tmux, name) {
+            require_session_pane_target(&ctx.tmux, name);
         }
     }
 }
@@ -279,7 +287,7 @@ pub fn send(ctx: &Ctx, args: SendArgs) -> Result<()> {
         body_text(args.file.as_deref(), args.stdin, &args.text)?
     };
     let use_paste = args.paste || (ctx.cfg.send.bracketed_paste && body.contains('\n'));
-    handle_delivery_result(deliver(
+    let delivery = deliver(
         &ctx.tmux,
         target.tmux_target(),
         &target.display(),
@@ -290,7 +298,11 @@ pub fn send(ctx: &Ctx, args: SendArgs) -> Result<()> {
         args.enter,
         ctx.cfg.send.enter_delay_ms,
         args.verify && !args.keys,
-    ))?;
+    );
+    if delivery.is_err() {
+        ensure_origin_available(ctx, &target);
+    }
+    handle_delivery_result(delivery)?;
     if !ctx.quiet {
         eprintln!("sent to {}", target.display());
     }
@@ -302,7 +314,7 @@ pub fn paste(ctx: &Ctx, args: PasteArgs) -> Result<()> {
     ensure_target_exists(ctx, &target);
     let body = body_text(args.file.as_deref(), args.stdin, &args.text)?;
     let verify = !args.no_verify && !args.no_enter;
-    handle_delivery_result(deliver(
+    let delivery = deliver(
         &ctx.tmux,
         target.tmux_target(),
         &target.display(),
@@ -313,7 +325,11 @@ pub fn paste(ctx: &Ctx, args: PasteArgs) -> Result<()> {
         !args.no_enter,
         ctx.cfg.send.enter_delay_ms,
         verify,
-    ))?;
+    );
+    if delivery.is_err() {
+        ensure_origin_available(ctx, &target);
+    }
+    handle_delivery_result(delivery)?;
     if !ctx.quiet {
         eprintln!("pasted into {}", target.display());
     }
@@ -396,6 +412,76 @@ fn cat_explicit_target(ctx: &Ctx, name: &str) -> Result<CatTarget> {
     })
 }
 
+fn recorded_cat_output(
+    store: &Store,
+    name: &str,
+    lines: u32,
+    all_history: bool,
+) -> Result<Option<String>> {
+    Ok(store.read_log(name)?.map(|log| {
+        let out = if all_history {
+            log
+        } else {
+            last_lines(&log, lines as usize)
+        };
+        trim_trailing_blank(&out)
+    }))
+}
+
+fn recorded_or_origin_gone(
+    store: &Store,
+    name: &str,
+    lines: u32,
+    all_history: bool,
+    error: impl std::fmt::Display,
+) -> Result<(String, String)> {
+    if let Some(output) = recorded_cat_output(store, name, lines, all_history)? {
+        return Ok(("exited".to_string(), output));
+    }
+    die(code::NOT_FOUND, error.to_string())
+}
+
+/// Capture a live session or replay its record when its stamped origin has vanished.
+fn live_session_cat_output(
+    ctx: &Ctx,
+    store: &Store,
+    name: &str,
+    lines: u32,
+    escape: bool,
+    all_history: bool,
+) -> Result<(String, String)> {
+    let pane_target = match session_pane_target(&ctx.tmux, name) {
+        Ok(target) => target,
+        Err(error) => {
+            return recorded_or_origin_gone(store, name, lines, all_history, error);
+        }
+    };
+    let raw = match capture(&ctx.tmux, &pane_target, Some(lines), escape, all_history) {
+        Ok(raw) => raw,
+        Err(capture_error) => match session_pane_target(&ctx.tmux, name) {
+            Ok(_) => return Err(capture_error.into()),
+            Err(error) => {
+                return recorded_or_origin_gone(store, name, lines, all_history, error);
+            }
+        },
+    };
+    if let Err(error) = session_pane_target(&ctx.tmux, name) {
+        return recorded_or_origin_gone(store, name, lines, all_history, error);
+    }
+    let trimmed = trim_trailing_blank(&raw);
+    let output = if all_history {
+        trimmed
+    } else {
+        last_lines(&trimmed, lines as usize)
+    };
+    let status = if pane_dead(&ctx.tmux, &pane_target) {
+        "exited"
+    } else {
+        "running"
+    };
+    Ok((status.to_string(), output))
+}
+
 pub fn cat(ctx: &Ctx, args: CatArgs) -> Result<()> {
     let lines = args.lines.unwrap_or(ctx.cfg.capture.lines);
     let store_socket = ctx.tmux.store_socket();
@@ -448,45 +534,26 @@ pub fn cat(ctx: &Ctx, args: CatArgs) -> Result<()> {
             };
             (status.to_string(), out)
         } else if session::exists(&ctx.tmux, &target.resolved) {
-            let raw = capture(
-                &ctx.tmux,
+            live_session_cat_output(
+                ctx,
+                &store,
                 &target.resolved,
-                Some(lines),
+                lines,
                 args.escape,
                 args.all_history,
-            )?;
-            let trimmed = trim_trailing_blank(&raw);
-            let out = if args.all_history {
-                trimmed
-            } else {
-                last_lines(&trimmed, lines as usize)
-            };
-            let status = if pane_dead(&ctx.tmux, &target.resolved) {
-                "exited"
-            } else {
-                "running"
-            };
-            (status.to_string(), out)
-        } else if let Some(log) = store.read_log(&target.resolved)? {
-            let out = if args.all_history {
-                log
-            } else {
-                last_lines(&log, lines as usize)
-            };
-            ("exited".to_string(), trim_trailing_blank(&out))
+            )?
+        } else if let Some(output) =
+            recorded_cat_output(&store, &target.resolved, lines, args.all_history)?
+        {
+            ("exited".to_string(), output)
         } else if let Some(raw_name) = target
             .raw
             .as_ref()
             .filter(|raw_name| *raw_name != &target.resolved)
         {
-            if let Some(log) = store.read_log(raw_name)? {
+            if let Some(output) = recorded_cat_output(&store, raw_name, lines, args.all_history)? {
                 display_name = raw_name;
-                let out = if args.all_history {
-                    log
-                } else {
-                    last_lines(&log, lines as usize)
-                };
-                ("exited".to_string(), trim_trailing_blank(&out))
+                ("exited".to_string(), output)
             } else {
                 no_such_session(&target.resolved);
             }
@@ -574,7 +641,12 @@ pub fn tail(ctx: &Ctx, args: TailArgs) -> Result<()> {
     let mut last: Vec<String> = Vec::with_capacity(targets.len());
     let initial = args.lines.unwrap_or(0);
     for name in &targets {
-        let snap = capture(&ctx.tmux, name, Some(window), false, false).unwrap_or_default();
+        let pane_target = require_session_pane_target(&ctx.tmux, name);
+        let snap =
+            capture(&ctx.tmux, &pane_target, Some(window), false, false).unwrap_or_else(|_| {
+                require_session_pane_target(&ctx.tmux, name);
+                String::new()
+            });
         if initial > 0 {
             let shown = trim_trailing_blank(&last_lines(&snap, initial as usize));
             for line in shown.lines() {
@@ -590,9 +662,13 @@ pub fn tail(ctx: &Ctx, args: TailArgs) -> Result<()> {
             if !session::exists(&ctx.tmux, name) {
                 continue;
             }
-            let cur = match capture(&ctx.tmux, name, Some(window), false, false) {
+            let pane_target = require_session_pane_target(&ctx.tmux, name);
+            let cur = match capture(&ctx.tmux, &pane_target, Some(window), false, false) {
                 Ok(s) => s,
-                Err(_) => continue,
+                Err(_) => {
+                    require_session_pane_target(&ctx.tmux, name);
+                    continue;
+                }
             };
             let new = appended(&last[i], &cur);
             if !new.is_empty() {
@@ -602,7 +678,7 @@ pub fn tail(ctx: &Ctx, args: TailArgs) -> Result<()> {
                 }
             }
             last[i] = cur;
-            if !pane_dead(&ctx.tmux, name) {
+            if !pane_dead(&ctx.tmux, &pane_target) {
                 any_alive = true;
             }
         }
@@ -643,11 +719,16 @@ pub fn wait(ctx: &Ctx, args: WaitArgs) -> Result<()> {
     let mut last_change = Instant::now();
 
     let outcome = loop {
+        ensure_origin_available(ctx, &target);
         if args.exit && pane_dead(&ctx.tmux, target.tmux_target()) {
             break "exited";
         }
-        let cur =
-            capture(&ctx.tmux, target.tmux_target(), Some(400), false, false).unwrap_or_default();
+        let cur = capture(&ctx.tmux, target.tmux_target(), Some(400), false, false).unwrap_or_else(
+            |_| {
+                ensure_origin_available(ctx, &target);
+                String::new()
+            },
+        );
         if let Some(text) = &args.text {
             if cur.contains(text.as_str()) {
                 break "text";

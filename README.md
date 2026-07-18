@@ -93,7 +93,8 @@ Run `tpp <cmd> --help` for full flags. Aliases in parentheses.
 
 Also: `config`, `init`, `doctor`, `completions <shell>`, and hidden tmux-compat verbs
 (`has-session`, `new-session`, `send-keys`, …) that forward straight to `tmux`, so existing tmux
-scripts work unchanged.
+scripts work unchanged. For `capture-pane`, `send-keys`, and `paste-buffer`, a bare session `-t`
+is pinned to that session's startup pane; explicit window/pane targets keep normal tmux semantics.
 
 ## Built for agents
 
@@ -104,6 +105,8 @@ scripts work unchanged.
   written.
 - **Pane targets** let scripts address `pane:<name>` for `send`, `paste`, `cat`, and `wait`.
   Plain session targets use the session's startup pane, even after attaches or new windows.
+  If a stamped startup pane is gone, pane I/O exits `3` instead of following session focus;
+  unstamped legacy sessions retain tmux's bare-session behavior.
 - **Omitted session names** use the sole session, or an `fzf` picker when there are several.
 
 ### Agent lifecycle contracts

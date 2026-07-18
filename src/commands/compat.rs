@@ -5,13 +5,18 @@
 use anyhow::Result;
 
 use crate::cli::RawArgs;
-use crate::commands::Ctx;
+use crate::commands::{require_session_pane_target, Ctx};
 use crate::session::{self, now_epoch};
 use crate::tmux::{exact, tgt};
 
-fn rewrite_short_flag_value<F>(args: &mut [String], index: usize, flag: &str, rewrite: F) -> usize
+fn rewrite_short_flag_value<F>(
+    args: &mut [String],
+    index: usize,
+    flag: &str,
+    mut rewrite: F,
+) -> usize
 where
-    F: Fn(&str) -> String,
+    F: FnMut(&str) -> String,
 {
     if args[index] == flag {
         if index + 1 < args.len() {
@@ -126,20 +131,21 @@ fn find_short_flag_value(args: &[String], flag: &str, value_flags: &[&str]) -> O
     None
 }
 
-fn prefix_target_args_with_values(
-    cfg: &crate::config::Config,
+fn rewrite_target_args_with_values<F>(
     mut args: Vec<String>,
     value_flags: &[&str],
-) -> Vec<String> {
+    mut rewrite: F,
+) -> Vec<String>
+where
+    F: FnMut(&str) -> String,
+{
     let mut i = 0;
     while i < args.len() {
         if args[i] == "--" {
             break;
         }
         if args[i] == "-t" || args[i].starts_with("-t") {
-            i = rewrite_short_flag_value(&mut args, i, "-t", |target| {
-                session::prefixed_target(cfg, target)
-            });
+            i = rewrite_short_flag_value(&mut args, i, "-t", &mut rewrite);
         } else if short_flag_takes_value(&args[i], value_flags) {
             i += 2;
         } else {
@@ -149,16 +155,49 @@ fn prefix_target_args_with_values(
     args
 }
 
+fn prefix_target_args_with_values(
+    cfg: &crate::config::Config,
+    args: Vec<String>,
+    value_flags: &[&str],
+) -> Vec<String> {
+    rewrite_target_args_with_values(args, value_flags, |target| {
+        session::prefixed_target(cfg, target)
+    })
+}
+
 fn prefix_target_args(cfg: &crate::config::Config, args: Vec<String>) -> Vec<String> {
     prefix_target_args_with_values(cfg, args, &[])
 }
 
-fn prefix_forward_args(cfg: &crate::config::Config, verb: &str, args: Vec<String>) -> Vec<String> {
+fn is_plain_session_target(target: &str) -> bool {
+    let raw = target.trim().trim_start_matches('=');
+    !raw.starts_with(['%', '@', '$', '{', '!']) && !raw.contains([':', '.'])
+}
+
+fn prefix_forward_args<F>(
+    cfg: &crate::config::Config,
+    verb: &str,
+    args: Vec<String>,
+    mut resolve_session: F,
+) -> Vec<String>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    let mut rewrite_io_targets = |args, value_flags: &[&str]| {
+        rewrite_target_args_with_values(args, value_flags, |target| {
+            let prefixed = session::prefixed_target(cfg, target);
+            if is_plain_session_target(&prefixed) {
+                resolve_session(&prefixed).unwrap_or(prefixed)
+            } else {
+                prefixed
+            }
+        })
+    };
     match verb {
         "kill-session" => prefix_target_args_with_values(cfg, args, &[]),
-        "paste-buffer" => prefix_target_args_with_values(cfg, args, &["-b", "-s"]),
-        "send-keys" => prefix_target_args_with_values(cfg, args, &["-N"]),
-        "capture-pane" => prefix_target_args_with_values(cfg, args, &["-b", "-E", "-S"]),
+        "paste-buffer" => rewrite_io_targets(args, &["-b", "-s"]),
+        "send-keys" => rewrite_io_targets(args, &["-N"]),
+        "capture-pane" => rewrite_io_targets(args, &["-b", "-E", "-S"]),
         _ => args,
     }
 }
@@ -245,7 +284,10 @@ pub fn attach_session(ctx: &Ctx, raw: RawArgs) -> Result<()> {
 }
 
 pub fn forward(ctx: &Ctx, verb: &str, raw: RawArgs) -> Result<()> {
-    forward_print(ctx, verb, prefix_forward_args(&ctx.cfg, verb, raw.args))
+    let args = prefix_forward_args(&ctx.cfg, verb, raw.args, |target| {
+        session::exists(&ctx.tmux, target).then(|| require_session_pane_target(&ctx.tmux, target))
+    });
+    forward_print(ctx, verb, args)
 }
 
 /// Raw passthrough: `tpp x -- <tmux args>`.
@@ -358,6 +400,7 @@ mod tests {
             &Config::default(),
             "set-buffer",
             args(&["-b", "-tmp", "data"]),
+            |_| None,
         );
 
         assert_eq!(rewritten, args(&["-b", "-tmp", "data"]));
@@ -369,9 +412,33 @@ mod tests {
             &Config::default(),
             "paste-buffer",
             args(&["-b", "-tmp", "-t", "api"]),
+            |_| None,
         );
 
         assert_eq!(rewritten, args(&["-b", "-tmp", "-t", "tpp/api"]));
+    }
+
+    #[test]
+    fn prefix_forward_args_resolves_only_plain_io_session_targets() {
+        for target in ["api:1.2", "%5", "@7", "$2", "{last}", "!3"] {
+            let rewritten = prefix_forward_args(
+                &Config::default(),
+                "send-keys",
+                args(&["-t", target, "Enter"]),
+                |_| Some("%42".to_string()),
+            );
+
+            assert_ne!(rewritten[1], "%42", "target {target}");
+        }
+
+        let rewritten = prefix_forward_args(
+            &Config::default(),
+            "capture-pane",
+            args(&["-ttpp/api", "-p"]),
+            |target| (target == "tpp/api").then(|| "%42".to_string()),
+        );
+
+        assert_eq!(rewritten, args(&["-t%42", "-p"]));
     }
 
     #[test]
