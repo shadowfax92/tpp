@@ -54,6 +54,7 @@ tpp paste -t pane:mediator --stdin
 tpp has api --alive            # 0 only while the root pane process is running
 tpp reap --dry-run             # preview stale detached sessions before cleanup
 tpp watch ls                   # list active per-session watchers
+tpp watch rules                # show effective config + built-in rule order
 tpp rm api                     # kill it
 
 # From a script / agent
@@ -131,13 +132,17 @@ are not watched; use `new --no-watch` or `[watch] enabled = false` to opt out, a
 `@tpp_origin_pane`, ANSI-strips and hashes the last 30 lines, and resets whenever the screen
 changes. That screen-change rule keeps animated TUIs from being mistaken for stalls.
 
-User rules run before built-ins, first match wins. A stable known prompt is handled after
-`prompt_stable` (default `5s`); built-ins press Enter only for `Press enter to continue`,
-`Enter to confirm`, `Do you trust`, and `trust this folder`. The Claude idle marker
-`? for shortcuts` is ignored. Unmatched stable output escalates after `stuck_after` (default
-`30s`) without sending input. Automatic Enter is capped by `max_enters` and must produce a
-changed capture; otherwise the watcher escalates. Escalation fires once per unchanged episode
-and respects the per-session `cooldown`.
+User rules run before built-ins, first match wins, and can `enter`, send arbitrary tmux `keys`,
+`notify`, or `ignore`. A stable known prompt is handled after `prompt_stable` (default `5s`).
+The safety-checks menu selects "Keep waiting" with `Down` then `Enter`; other built-ins press
+Enter only for `Press enter to continue`, `Enter to confirm`, `Do you trust`, and
+`trust this folder`. The Claude idle marker `? for shortcuts` is ignored. Set
+`builtin_rules = false` to use config rules only, and inspect the effective order with
+`tpp watch rules` (`--json` and `-q` are supported). Unmatched stable output escalates after
+`stuck_after` (default `30s`) without sending input. `auto_enter` gates every automated key send,
+and `max_enters` caps sends per unchanged episode; a send must produce a changed capture or the
+watcher escalates. Escalation fires once per unchanged episode and respects the per-session
+`cooldown`.
 
 When `new` is called inside tmux it stores the caller's raw pane id in `@tpp_parent_pane`;
 `--parent-pane TMUX_TARGET` overrides it. Escalation bracket-pastes one message plus Enter into
@@ -217,14 +222,20 @@ prompt_stable = "5s"
 stuck_after = "30s"
 auto_enter = true
 max_enters = 2
+builtin_rules = true
 nudge_parent = true
 notify = ""
 # notify = "mac-notify send --blocker \"tpp {session}: {reason}\""
 cooldown = "10m"
 
 # [[watch.rules]]
-# pattern = "/Sign in to continue/"  # plain text = substring; /.../ = regex
-# action = "notify"                  # enter | notify | ignore
+# pattern = "Retry with a faster model"  # plain text = substring; /.../ = regex
+# action = "keys"                        # enter | keys | notify | ignore
+# keys = ["Down", "Enter"]               # tmux key names, sent in one call
+
+# [[watch.rules]]
+# pattern = "/Sign in to continue/"
+# action = "notify"
 ```
 
 ## How it works
