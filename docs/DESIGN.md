@@ -63,7 +63,9 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
   `@tpp_origin_pane` once, captures only that raw `%id`, ANSI-strips and hashes its last 30 lines,
   and treats a hash change as activity. User rules precede built-ins; known blockers use the short
   prompt threshold, ignored idle screens remain silent, and unmatched screens use the longer stall
-  threshold. Auto-Enter is pattern-gated and bounded; escalation is once per stable episode plus a
+  threshold. Rules can send Enter or an ordered tmux key sequence, notify, or ignore; they are
+  config-defined with an optional built-in rule set and inspectable through `tpp watch rules`.
+  Automated sends are pattern-gated and bounded; escalation is once per stable episode plus a
   session cooldown.
 - **Parent escalation** uses `@tpp_parent_pane`, normally resolved from `$TMUX_PANE` at `new`
   time and overridable with `--parent-pane`. The watcher uses the internal bracketed-paste path

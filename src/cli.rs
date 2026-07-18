@@ -218,6 +218,8 @@ pub enum WatchCommand {
     Run(WatchTargetArgs),
     /// List active session watchers.
     Ls,
+    /// Print effective watch rules in matching order.
+    Rules,
     /// Stop a session watcher.
     Stop(WatchTargetArgs),
 }
