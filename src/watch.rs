@@ -24,13 +24,40 @@ use crate::paths::{create_private_dir_all, encode_state_component};
 use crate::session;
 use crate::tmux::tgt;
 
-const BUILTIN_RULES: &[(&str, WatchAction)] = &[
-    ("? for shortcuts", WatchAction::Ignore),
-    ("Press enter to continue", WatchAction::Enter),
-    ("Enter to confirm", WatchAction::Enter),
-    ("Do you trust", WatchAction::Enter),
-    ("trust this folder", WatchAction::Enter),
-];
+fn builtin_rules() -> Vec<WatchRuleCfg> {
+    vec![
+        WatchRuleCfg {
+            pattern: "Retry with a faster model".to_string(),
+            action: WatchAction::Keys,
+            keys: vec!["Down".to_string(), "Enter".to_string()],
+        },
+        WatchRuleCfg {
+            pattern: "? for shortcuts".to_string(),
+            action: WatchAction::Ignore,
+            keys: Vec::new(),
+        },
+        WatchRuleCfg {
+            pattern: "Press enter to continue".to_string(),
+            action: WatchAction::Enter,
+            keys: Vec::new(),
+        },
+        WatchRuleCfg {
+            pattern: "Enter to confirm".to_string(),
+            action: WatchAction::Enter,
+            keys: Vec::new(),
+        },
+        WatchRuleCfg {
+            pattern: "Do you trust".to_string(),
+            action: WatchAction::Enter,
+            keys: Vec::new(),
+        },
+        WatchRuleCfg {
+            pattern: "trust this folder".to_string(),
+            action: WatchAction::Enter,
+            keys: Vec::new(),
+        },
+    ]
+}
 
 #[derive(Debug)]
 enum RulePattern {
@@ -42,13 +69,20 @@ enum RulePattern {
 struct CompiledRule {
     source: String,
     pattern: RulePattern,
-    action: WatchAction,
+    action: RuleAction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RuleMatch {
     source: String,
-    action: WatchAction,
+    action: RuleAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RuleAction {
+    Send(Vec<String>),
+    Notify,
+    Ignore,
 }
 
 #[derive(Debug)]
@@ -57,13 +91,15 @@ struct RuleSet {
 }
 
 impl RuleSet {
-    fn compile(configured: &[WatchRuleCfg]) -> Result<Self> {
-        let mut rules = Vec::with_capacity(configured.len() + BUILTIN_RULES.len());
+    fn compile(configured: &[WatchRuleCfg], include_builtins: bool) -> Result<Self> {
+        let builtins = include_builtins.then(builtin_rules);
+        let mut rules =
+            Vec::with_capacity(configured.len() + builtins.as_ref().map_or(0, std::vec::Vec::len));
         for rule in configured {
-            rules.push(CompiledRule::compile(&rule.pattern, rule.action)?);
+            rules.push(CompiledRule::compile(rule)?);
         }
-        for &(pattern, action) in BUILTIN_RULES {
-            rules.push(CompiledRule::compile(pattern, action)?);
+        for rule in builtins.iter().flatten() {
+            rules.push(CompiledRule::compile(rule)?);
         }
         Ok(Self { rules })
     }
@@ -76,14 +112,36 @@ impl RuleSet {
             };
             matches.then(|| RuleMatch {
                 source: rule.source.clone(),
-                action: rule.action,
+                action: rule.action.clone(),
             })
         })
     }
 }
 
 impl CompiledRule {
-    fn compile(pattern: &str, action: WatchAction) -> Result<Self> {
+    fn compile(rule: &WatchRuleCfg) -> Result<Self> {
+        let pattern = &rule.pattern;
+        let action = match rule.action {
+            WatchAction::Enter if !rule.keys.is_empty() => {
+                bail!("watch rule {pattern:?}: action \"enter\" does not accept keys")
+            }
+            WatchAction::Enter => RuleAction::Send(vec!["Enter".to_string()]),
+            WatchAction::Keys if rule.keys.is_empty() => {
+                bail!("watch rule {pattern:?}: action \"keys\" requires at least one key")
+            }
+            WatchAction::Keys if rule.keys.iter().any(|key| key.trim().is_empty()) => {
+                bail!("watch rule {pattern:?}: keys must not contain empty entries")
+            }
+            WatchAction::Keys => RuleAction::Send(rule.keys.clone()),
+            WatchAction::Notify if !rule.keys.is_empty() => {
+                bail!("watch rule {pattern:?}: action \"notify\" does not accept keys")
+            }
+            WatchAction::Notify => RuleAction::Notify,
+            WatchAction::Ignore if !rule.keys.is_empty() => {
+                bail!("watch rule {pattern:?}: action \"ignore\" does not accept keys")
+            }
+            WatchAction::Ignore => RuleAction::Ignore,
+        };
         let compiled = if pattern.len() >= 2 && pattern.starts_with('/') && pattern.ends_with('/') {
             RulePattern::Regex(
                 Regex::new(&pattern[1..pattern.len() - 1])
@@ -102,7 +160,7 @@ impl CompiledRule {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WatchDecision {
-    Enter { pattern: String },
+    Send { pattern: String, keys: Vec<String> },
     Escalate { reason: String },
 }
 
@@ -110,7 +168,7 @@ pub enum WatchDecision {
 struct WatchState {
     screen_hash: Option<u64>,
     stable_since: Duration,
-    enters: u32,
+    sends: u32,
     awaiting_change: bool,
     escalated: bool,
     last_escalation: Option<Duration>,
@@ -127,7 +185,7 @@ impl WatchEngine {
     pub fn new(cfg: &WatchCfg) -> Result<Self> {
         Ok(Self {
             cfg: cfg.clone(),
-            rules: RuleSet::compile(&cfg.rules)?,
+            rules: RuleSet::compile(&cfg.rules, cfg.builtin_rules)?,
             state: WatchState::default(),
         })
     }
@@ -157,13 +215,13 @@ impl WatchState {
         if self.screen_hash != Some(screen_hash) {
             self.screen_hash = Some(screen_hash);
             self.stable_since = now;
-            self.enters = 0;
+            self.sends = 0;
             self.awaiting_change = false;
             self.escalated = false;
             return None;
         }
 
-        if matched.is_some_and(|rule| rule.action == WatchAction::Ignore) {
+        if matched.is_some_and(|rule| rule.action == RuleAction::Ignore) {
             return None;
         }
 
@@ -171,38 +229,36 @@ impl WatchState {
             return self.escalate(
                 now,
                 cfg,
-                "screen unchanged after automatic Enter".to_string(),
+                "screen unchanged after automatic keys".to_string(),
             );
         }
 
         let stable_for = now.saturating_sub(self.stable_since);
         match matched {
             Some(rule) if stable_for >= Duration::from_secs(cfg.prompt_stable.as_secs()) => {
-                match rule.action {
-                    WatchAction::Enter if cfg.auto_enter && self.enters < cfg.max_enters => {
-                        self.enters += 1;
+                match &rule.action {
+                    RuleAction::Send(keys) if cfg.auto_enter && self.sends < cfg.max_enters => {
+                        self.sends += 1;
                         self.awaiting_change = true;
-                        Some(WatchDecision::Enter {
+                        Some(WatchDecision::Send {
                             pattern: rule.source.clone(),
+                            keys: keys.clone(),
                         })
                     }
-                    WatchAction::Enter if !cfg.auto_enter => self.escalate(
+                    RuleAction::Send(_) if !cfg.auto_enter => self.escalate(
                         now,
                         cfg,
-                        format!("matched {:?}, but auto-Enter is disabled", rule.source),
+                        format!("matched {:?}, but automatic keys are disabled", rule.source),
                     ),
-                    WatchAction::Enter => self.escalate(
+                    RuleAction::Send(_) => self.escalate(
                         now,
                         cfg,
-                        format!("automatic Enter limit reached for {:?}", rule.source),
+                        format!("automatic key-send limit reached for {:?}", rule.source),
                     ),
-                    WatchAction::Notify => {
+                    RuleAction::Notify => {
                         self.escalate(now, cfg, format!("matched watch rule {:?}", rule.source))
                     }
-                    WatchAction::Keys => {
-                        self.escalate(now, cfg, format!("matched keys rule {:?}", rule.source))
-                    }
-                    WatchAction::Ignore => None,
+                    RuleAction::Ignore => None,
                 }
             }
             None if stable_for >= Duration::from_secs(cfg.stuck_after.as_secs()) => self.escalate(
@@ -675,18 +731,21 @@ fn watch_loop(ctx: &Ctx, root: &Path, session_name: &str, origin: &str, token: &
         let stripped = strip_ansi(&captured);
         let screen = last_lines(&trim_trailing_blank(&stripped), 30);
         match engine.observe(started.elapsed(), screen_hash(&screen), &screen) {
-            Some(WatchDecision::Enter { pattern }) => {
-                if ctx
-                    .tmux
-                    .run(["send-keys", "-t", &tgt(origin), "Enter"])
-                    .is_err()
-                {
+            Some(WatchDecision::Send { pattern, keys }) => {
+                let mut args = vec![
+                    "send-keys".to_string(),
+                    "-t".to_string(),
+                    tgt(origin),
+                    "--".to_string(),
+                ];
+                args.extend(keys.iter().cloned());
+                if ctx.tmux.run(&args).is_err() {
                     return Ok(());
                 }
                 append_log(
                     root,
                     session_name,
-                    &format!("automatic Enter for {pattern:?}"),
+                    &format!("automatic keys {keys:?} for {pattern:?}"),
                 );
             }
             Some(WatchDecision::Escalate { reason }) => {
@@ -835,7 +894,7 @@ fn clear_stop_request(path: &Path, token: &str) {
 mod tests {
     use super::{
         active_process, notify_command, nudge_message, pidfile_path, stop_requested, PidGuard,
-        RuleSet, WatchDecision, WatchState,
+        RuleAction, RuleSet, WatchDecision, WatchState,
     };
     use crate::config::{WatchAction, WatchCfg, WatchRuleCfg};
     use std::process::Command;
@@ -846,68 +905,126 @@ mod tests {
     }
 
     #[test]
+    fn safety_checks_builtin_sends_down_then_enter() {
+        let rules = RuleSet::compile(&[], true).unwrap();
+        let matched = rules.matched("Retry with a faster model").unwrap();
+
+        assert_eq!(
+            matched.action,
+            super::RuleAction::Send(vec!["Down".to_string(), "Enter".to_string()])
+        );
+    }
+
+    #[test]
+    fn keys_actions_require_only_nonempty_key_tokens() {
+        let empty = WatchRuleCfg {
+            pattern: "menu".to_string(),
+            action: WatchAction::Keys,
+            keys: Vec::new(),
+        };
+        assert!(RuleSet::compile(&[empty], false)
+            .unwrap_err()
+            .to_string()
+            .contains("requires at least one key"));
+
+        let blank = WatchRuleCfg {
+            pattern: "menu".to_string(),
+            action: WatchAction::Keys,
+            keys: vec!["Down".to_string(), " ".to_string()],
+        };
+        assert!(RuleSet::compile(&[blank], false)
+            .unwrap_err()
+            .to_string()
+            .contains("must not contain empty entries"));
+
+        for action in [WatchAction::Enter, WatchAction::Notify, WatchAction::Ignore] {
+            let keyless_action = WatchRuleCfg {
+                pattern: "menu".to_string(),
+                action,
+                keys: vec!["Enter".to_string()],
+            };
+            assert!(RuleSet::compile(&[keyless_action], false)
+                .unwrap_err()
+                .to_string()
+                .contains("does not accept keys"));
+        }
+    }
+
+    #[test]
     fn user_rules_precede_builtins_and_first_match_wins() {
-        let rules = RuleSet::compile(&[
-            WatchRuleCfg {
-                pattern: "Press enter".to_string(),
-                action: WatchAction::Ignore,
-                keys: Vec::new(),
-            },
-            WatchRuleCfg {
-                pattern: "continue".to_string(),
-                action: WatchAction::Notify,
-                keys: Vec::new(),
-            },
-        ])
+        let rules = RuleSet::compile(
+            &[
+                WatchRuleCfg {
+                    pattern: "Press enter".to_string(),
+                    action: WatchAction::Ignore,
+                    keys: Vec::new(),
+                },
+                WatchRuleCfg {
+                    pattern: "continue".to_string(),
+                    action: WatchAction::Notify,
+                    keys: Vec::new(),
+                },
+            ],
+            true,
+        )
         .unwrap();
 
         let matched = rules.matched("Press enter to continue").unwrap();
         assert_eq!(matched.source, "Press enter");
-        assert_eq!(matched.action, WatchAction::Ignore);
+        assert_eq!(matched.action, RuleAction::Ignore);
     }
 
     #[test]
     fn slash_delimited_rules_are_regexes() {
-        let rules = RuleSet::compile(&[WatchRuleCfg {
-            pattern: "/OAuth [0-9]+/".to_string(),
-            action: WatchAction::Notify,
-            keys: Vec::new(),
-        }])
+        let rules = RuleSet::compile(
+            &[WatchRuleCfg {
+                pattern: "/OAuth [0-9]+/".to_string(),
+                action: WatchAction::Notify,
+                keys: Vec::new(),
+            }],
+            true,
+        )
         .unwrap();
 
         assert_eq!(
             rules.matched("OAuth 123").unwrap().action,
-            WatchAction::Notify
+            RuleAction::Notify
         );
-        assert!(RuleSet::compile(&[WatchRuleCfg {
-            pattern: "/[unterminated/".to_string(),
-            action: WatchAction::Notify,
-            keys: Vec::new(),
-        }])
+        assert!(RuleSet::compile(
+            &[WatchRuleCfg {
+                pattern: "/[unterminated/".to_string(),
+                action: WatchAction::Notify,
+                keys: Vec::new(),
+            }],
+            true,
+        )
         .is_err());
     }
 
     #[test]
     fn builtins_cover_frozen_prompts_and_claude_idle() {
-        let rules = RuleSet::compile(&[]).unwrap();
+        let rules = RuleSet::compile(&[], true).unwrap();
         for screen in [
             "Press enter to continue",
             "Enter to confirm · Esc to cancel",
             "Do you trust the contents of this directory?",
             "Yes, I trust this folder",
         ] {
-            assert_eq!(rules.matched(screen).unwrap().action, WatchAction::Enter);
+            assert_eq!(
+                rules.matched(screen).unwrap().action,
+                RuleAction::Send(vec!["Enter".to_string()])
+            );
         }
         assert_eq!(
             rules.matched("composer  ? for shortcuts").unwrap().action,
-            WatchAction::Ignore
+            RuleAction::Ignore
         );
         assert_eq!(
             rules
                 .matched("Press enter to continue\n? for shortcuts")
                 .unwrap()
                 .action,
-            WatchAction::Ignore
+            RuleAction::Ignore
         );
     }
 
@@ -986,7 +1103,7 @@ mod tests {
     #[test]
     fn matched_prompts_use_the_fast_threshold() {
         let cfg = WatchCfg::default();
-        let rules = RuleSet::compile(&[]).unwrap();
+        let rules = RuleSet::compile(&[], true).unwrap();
         let matched = rules.matched("Press enter to continue").unwrap();
         let mut state = WatchState::default();
 
@@ -994,8 +1111,9 @@ mod tests {
         assert_eq!(state.observe(seconds(4), 1, Some(&matched), &cfg), None);
         assert_eq!(
             state.observe(seconds(5), 1, Some(&matched), &cfg),
-            Some(WatchDecision::Enter {
-                pattern: "Press enter to continue".to_string()
+            Some(WatchDecision::Send {
+                pattern: "Press enter to continue".to_string(),
+                keys: vec!["Enter".to_string()]
             })
         );
     }
@@ -1017,16 +1135,16 @@ mod tests {
     }
 
     #[test]
-    fn screen_changes_reset_the_episode_and_enter_budget() {
+    fn screen_changes_reset_the_episode_and_send_budget() {
         let cfg = WatchCfg::default();
-        let rules = RuleSet::compile(&[]).unwrap();
+        let rules = RuleSet::compile(&[], true).unwrap();
         let matched = rules.matched("Press enter to continue").unwrap();
         let mut state = WatchState::default();
 
         state.observe(seconds(0), 1, Some(&matched), &cfg);
         assert!(matches!(
             state.observe(seconds(5), 1, Some(&matched), &cfg),
-            Some(WatchDecision::Enter { .. })
+            Some(WatchDecision::Send { .. })
         ));
         assert_eq!(state.observe(seconds(6), 2, None, &cfg), None);
         assert_eq!(state.observe(seconds(35), 2, None, &cfg), None);
@@ -1037,28 +1155,28 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_screen_after_enter_escalates() {
+    fn unchanged_screen_after_send_escalates() {
         let cfg = WatchCfg::default();
-        let rules = RuleSet::compile(&[]).unwrap();
+        let rules = RuleSet::compile(&[], true).unwrap();
         let matched = rules.matched("Enter to confirm").unwrap();
         let mut state = WatchState::default();
 
         state.observe(seconds(0), 9, Some(&matched), &cfg);
         assert!(matches!(
             state.observe(seconds(5), 9, Some(&matched), &cfg),
-            Some(WatchDecision::Enter { .. })
+            Some(WatchDecision::Send { .. })
         ));
         assert_eq!(
             state.observe(seconds(8), 9, Some(&matched), &cfg),
             Some(WatchDecision::Escalate {
-                reason: "screen unchanged after automatic Enter".to_string()
+                reason: "screen unchanged after automatic keys".to_string()
             })
         );
     }
 
     #[test]
     fn disabled_or_exhausted_auto_enter_escalates() {
-        let rules = RuleSet::compile(&[]).unwrap();
+        let rules = RuleSet::compile(&[], true).unwrap();
         let matched = rules.matched("Enter to confirm").unwrap();
         let disabled = WatchCfg {
             auto_enter: false,
@@ -1086,7 +1204,7 @@ mod tests {
     #[test]
     fn ignore_rules_suppress_unknown_escalation() {
         let cfg = WatchCfg::default();
-        let rules = RuleSet::compile(&[]).unwrap();
+        let rules = RuleSet::compile(&[], true).unwrap();
         let matched = rules.matched("? for shortcuts").unwrap();
         let mut state = WatchState::default();
 
