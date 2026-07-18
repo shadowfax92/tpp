@@ -70,6 +70,9 @@ struct CompiledRule {
     source: String,
     pattern: RulePattern,
     action: RuleAction,
+    origin: &'static str,
+    configured_action: WatchAction,
+    configured_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,10 +99,10 @@ impl RuleSet {
         let mut rules =
             Vec::with_capacity(configured.len() + builtins.as_ref().map_or(0, std::vec::Vec::len));
         for rule in configured {
-            rules.push(CompiledRule::compile(rule)?);
+            rules.push(CompiledRule::compile(rule, "config")?);
         }
         for rule in builtins.iter().flatten() {
-            rules.push(CompiledRule::compile(rule)?);
+            rules.push(CompiledRule::compile(rule, "builtin")?);
         }
         Ok(Self { rules })
     }
@@ -119,7 +122,7 @@ impl RuleSet {
 }
 
 impl CompiledRule {
-    fn compile(rule: &WatchRuleCfg) -> Result<Self> {
+    fn compile(rule: &WatchRuleCfg, origin: &'static str) -> Result<Self> {
         let pattern = &rule.pattern;
         let action = match rule.action {
             WatchAction::Enter if !rule.keys.is_empty() => {
@@ -154,7 +157,19 @@ impl CompiledRule {
             source: pattern.to_string(),
             pattern: compiled,
             action,
+            origin,
+            configured_action: rule.action,
+            configured_keys: rule.keys.clone(),
         })
+    }
+}
+
+fn action_name(action: WatchAction) -> &'static str {
+    match action {
+        WatchAction::Enter => "enter",
+        WatchAction::Keys => "keys",
+        WatchAction::Notify => "notify",
+        WatchAction::Ignore => "ignore",
     }
 }
 
@@ -306,6 +321,15 @@ struct WatchListRow {
     session: String,
     pid: u32,
     status: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct WatchRuleRow {
+    index: usize,
+    source: &'static str,
+    action: &'static str,
+    keys: Vec<String>,
+    pattern: String,
 }
 
 struct PidGuard {
@@ -840,6 +864,55 @@ pub fn list_watchers(ctx: &Ctx) -> Result<()> {
     println!("{:<36} {:<8} STATUS", "SESSION", "PID");
     for row in rows {
         println!("{:<36} {:<8} {}", row.session, row.pid, row.status);
+    }
+    Ok(())
+}
+
+/// Print the configured and built-in watch rules in their effective matching order.
+pub fn list_rules(ctx: &Ctx) -> Result<()> {
+    let rules = RuleSet::compile(&ctx.cfg.watch.rules, ctx.cfg.watch.builtin_rules)?;
+    let rows = rules
+        .rules
+        .into_iter()
+        .enumerate()
+        .map(|(index, rule)| WatchRuleRow {
+            index: index + 1,
+            source: rule.origin,
+            action: action_name(rule.configured_action),
+            keys: rule.configured_keys,
+            pattern: rule.source,
+        })
+        .collect::<Vec<_>>();
+    if ctx.json {
+        return print_json(&rows);
+    }
+    if ctx.quiet {
+        for row in rows {
+            println!("{}", row.pattern);
+        }
+        return Ok(());
+    }
+
+    let keys_width = rows
+        .iter()
+        .map(|row| row.keys.join(" ").len())
+        .max()
+        .unwrap_or(4)
+        .max(4);
+    println!(
+        "{:<3} {:<7} {:<6} {:<keys_width$} PATTERN",
+        "#", "SOURCE", "ACTION", "KEYS"
+    );
+    for row in rows {
+        let keys = if row.keys.is_empty() {
+            "-".to_string()
+        } else {
+            row.keys.join(" ")
+        };
+        println!(
+            "{:<3} {:<7} {:<6} {:<keys_width$} {}",
+            row.index, row.source, row.action, keys, row.pattern
+        );
     }
     Ok(())
 }

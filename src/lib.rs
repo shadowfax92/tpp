@@ -55,6 +55,7 @@ pub fn run() -> Result<()> {
         Cmd::Watch(a) => match a.action {
             WatchCommand::Run(a) => watch::run_foreground(&ctx, a),
             WatchCommand::Ls => watch::list_watchers(&ctx),
+            WatchCommand::Rules => watch::list_rules(&ctx),
             WatchCommand::Stop(a) => watch::stop_watcher(&ctx, a),
         },
         Cmd::Ls(a) => lifecycle::ls(&ctx, a),

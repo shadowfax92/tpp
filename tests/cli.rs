@@ -391,10 +391,84 @@ fn watch_subcommands_parse_with_frozen_names() {
         Some(Cmd::Watch(args)) if matches!(args.action, WatchCommand::Ls)
     ));
     assert!(matches!(
+        parse(&["watch", "rules"]).cmd,
+        Some(Cmd::Watch(args)) if matches!(args.action, WatchCommand::Rules)
+    ));
+    assert!(matches!(
         parse(&["watch", "stop", "--target", "codex/worker"]).cmd,
         Some(Cmd::Watch(args))
             if matches!(&args.action, WatchCommand::Stop(target) if target.target == "codex/worker")
     ));
+}
+
+#[test]
+fn watch_rules_prints_effective_table_json_and_quiet_views() {
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+
+    let table = run_tpp(&server, tmp.path(), &["watch", "rules"]);
+    assert_success(&table);
+    let table = String::from_utf8_lossy(&table.stdout);
+    assert!(table.contains("#   SOURCE  ACTION KEYS"));
+    assert!(table.contains("builtin keys   Down Enter Retry with a faster model"));
+
+    let json = run_tpp(&server, tmp.path(), &["--json", "watch", "rules"]);
+    assert_success(&json);
+    let rows: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 6);
+    assert_eq!(rows[0]["index"], 1);
+    assert_eq!(rows[0]["source"], "builtin");
+    assert_eq!(rows[0]["action"], "keys");
+    assert_eq!(rows[0]["keys"], serde_json::json!(["Down", "Enter"]));
+    assert_eq!(rows[0]["pattern"], "Retry with a faster model");
+
+    let quiet = run_tpp(&server, tmp.path(), &["-q", "watch", "rules"]);
+    assert_success(&quiet);
+    let quiet = String::from_utf8_lossy(&quiet.stdout);
+    assert_eq!(quiet.lines().count(), 6);
+    assert_eq!(quiet.lines().next(), Some("Retry with a faster model"));
+}
+
+#[test]
+fn watch_rules_honors_config_only_order_and_lints_rules() {
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let config_dir = tmp.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let config_path = config_dir.join("config.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[watch]
+builtin_rules = false
+
+[[watch.rules]]
+pattern = "custom menu"
+action = "keys"
+keys = ["Down", "Enter"]
+"#,
+    )
+    .unwrap();
+
+    let output = run_tpp(&server, tmp.path(), &["--json", "watch", "rules"]);
+    assert_success(&output);
+    let rows: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 1);
+    assert_eq!(rows[0]["source"], "config");
+    assert_eq!(rows[0]["pattern"], "custom menu");
+
+    std::fs::write(
+        config_path,
+        r#"
+[[watch.rules]]
+pattern = "broken"
+action = "keys"
+"#,
+    )
+    .unwrap();
+    let invalid = run_tpp(&server, tmp.path(), &["watch", "rules"]);
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("requires at least one key"));
 }
 
 #[test]
