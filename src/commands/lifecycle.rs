@@ -148,6 +148,7 @@ pub fn run(ctx: &Ctx, args: RunArgs) -> Result<()> {
 
     if args.wait {
         let status = run_wait(ctx, &name)?;
+        watch::stop_if_running(ctx, &name)?;
         if args.record {
             let _ = record_session(ctx, &name);
         }
@@ -445,6 +446,7 @@ fn select_reap_candidates(
 
 /// Kill one session after optional recording while preserving once-only hooks.
 fn remove_session_with_lifecycle(ctx: &Ctx, name: &str, record: bool) -> Result<()> {
+    watch::stop_if_running(ctx, name)?;
     if record {
         let _ = record_session(ctx, name);
     }
@@ -656,8 +658,18 @@ pub fn rename(ctx: &Ctx, args: RenameArgs) -> Result<()> {
     if !session::exists(&ctx.tmux, &session_name) {
         no_such_session(&session_name);
     }
+    let watch_marked = session::watch_armed(&ctx.tmux, &session_name);
+    let watch_stopped = watch::stop_if_running(ctx, &session_name)?;
+    let restart_watch = watch_marked || watch_stopped;
     ctx.tmux
         .run(["rename-session", "-t", &exact(&session_name), &new_name])?;
+    if restart_watch {
+        session::set_watch_armed(&ctx.tmux, &new_name, true);
+        if let Err(err) = watch::spawn_detached(ctx, &new_name) {
+            session::set_watch_armed(&ctx.tmux, &new_name, false);
+            return Err(err);
+        }
+    }
     if !ctx.quiet {
         eprintln!("renamed {session_name} -> {new_name}");
     }

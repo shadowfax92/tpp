@@ -67,8 +67,9 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
   session cooldown.
 - **Parent escalation** uses `@tpp_parent_pane`, normally resolved from `$TMUX_PANE` at `new`
   time and overridable with `--parent-pane`. The watcher uses the internal bracketed-paste path
-  against that raw pane id, then sends Enter. An optional shell notifier gets captured tail text
-  only through `TPP_TAIL`, not command-string substitution.
+  against that raw pane id, neutralizes shell-active punctuation in dynamic fields, then sends
+  Enter. An optional shell notifier gets captured tail text only through `TPP_TAIL`, not
+  command-string substitution.
 - **Watcher state** is socket-scoped under `~/.tpp/data/watch/<socket>/`: one stale-checked
   pidfile per session plus an append-only `watch.log`. `@tpp_watch=1` records that a watcher is
   armed; the watcher exits when the session or origin pane is gone/dead and does not own teardown.

@@ -331,6 +331,11 @@ pub fn set_watch_armed(tmux: &Tmux, target: &str, armed: bool) {
     }
 }
 
+/// Return whether the session is marked as having an armed watcher.
+pub fn watch_armed(tmux: &Tmux, target: &str) -> bool {
+    show_opt(tmux, target, WATCH_OPT).as_deref() == Some("1")
+}
+
 fn parse_optional_u32(value: &str) -> Option<u32> {
     value.trim().parse().ok()
 }

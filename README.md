@@ -144,7 +144,8 @@ When `new` is called inside tmux it stores the caller's raw pane id in `@tpp_par
 that pane and can also run `[watch] notify`. Notify commands receive `TPP_SESSION`,
 `TPP_SESSION_NAME`, `TPP_REASON`, `TPP_TAIL` (last five lines), `TPP_DIR`, and
 `TPP_PARENT_PANE`; only `{session}` and `{reason}` are substituted in the command string, so
-captured screen text stays out of shell templates. Watcher pidfiles and action logs live under
+captured screen text stays out of shell templates. Shell-active punctuation in dynamic parent-nudge
+fields is rendered inert before paste. Watcher pidfiles and action logs live under
 `<state>/watch/<socket>/`; `@tpp_watch=1` marks an armed session.
 
 `tpp reap` is the conservative cleanup path for stale detached sessions. It never reaps attached

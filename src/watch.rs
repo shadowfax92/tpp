@@ -237,6 +237,7 @@ pub fn validate_config(cfg: &WatchCfg) -> Result<()> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct WatchProcess {
     session: String,
+    origin: String,
     pid: u32,
     token: String,
 }
@@ -256,7 +257,7 @@ struct PidGuard {
 }
 
 impl PidGuard {
-    fn acquire(root: &Path, session_name: &str) -> Result<Option<Self>> {
+    fn acquire(root: &Path, session_name: &str, origin: &str) -> Result<Option<Self>> {
         create_private_dir_all(root)?;
         let path = pidfile_path(root, session_name);
         let stop_path = stopfile_path(root, session_name);
@@ -272,13 +273,22 @@ impl PidGuard {
                 continue;
             }
             if !try_lock_exclusive(&lock)? {
-                return Ok(None);
+                let active =
+                    read_locked_process(&mut lock).context("reading active watcher pidfile")?;
+                if active.origin == origin {
+                    return Ok(None);
+                }
+                if same_file(&lock, &path) {
+                    let _ = std::fs::remove_file(&path);
+                }
+                continue;
             }
             if !same_file(&lock, &path) {
                 continue;
             }
             let record = WatchProcess {
                 session: session_name.to_string(),
+                origin: origin.to_string(),
                 pid: std::process::id(),
                 token: watch_token(),
             };
@@ -473,10 +483,42 @@ fn sanitized_line(text: &str, limit: usize) -> String {
     text.split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
-        .replace('"', "'")
         .chars()
+        .map(|ch| match ch {
+            '$' => '＄',
+            '`' => '｀',
+            '\\' => '＼',
+            '\'' => '’',
+            '"' => '”',
+            ';' => '；',
+            '|' => '｜',
+            '&' => '＆',
+            '<' => '＜',
+            '>' => '＞',
+            '(' => '（',
+            ')' => '）',
+            '!' => '！',
+            '#' => '＃',
+            '*' => '＊',
+            '?' => '？',
+            '[' => '［',
+            ']' => '］',
+            '{' => '｛',
+            '}' => '｝',
+            '~' => '～',
+            _ => ch,
+        })
         .take(limit)
         .collect()
+}
+
+fn nudge_message(session_name: &str, reason: &str, tail: &str) -> String {
+    let session_line = sanitized_line(session_name, 160);
+    let reason_line = sanitized_line(reason, 160);
+    let tail_line = sanitized_line(tail, 120);
+    format!(
+        "[tpp:{session_line}] ⚠️ stuck: {reason_line} — last: \"{tail_line}\" — check: tpp attach {session_line}"
+    )
 }
 
 fn send_parent_nudge(ctx: &Ctx, parent: &str, message: &str) -> Result<()> {
@@ -576,14 +618,11 @@ fn escalate(ctx: &Ctx, root: &Path, session_name: &str, reason: &str, screen: &s
     let parent = session::parent_pane(&ctx.tmux, session_name);
     let tail = last_lines(screen, 5);
     let reason_line = sanitized_line(reason, 160);
-    let tail_line = sanitized_line(&tail, 120);
     append_log(root, session_name, &format!("escalated: {reason_line}"));
 
     if ctx.cfg.watch.nudge_parent {
         if let Some(parent) = parent.as_deref() {
-            let message = format!(
-                "[tpp:{session_name}] ⚠️ stuck: {reason_line} — last: \"{tail_line}\" — check: tpp attach {session_name}"
-            );
+            let message = nudge_message(session_name, &reason_line, &tail);
             if let Err(err) = send_parent_nudge(ctx, parent, &message) {
                 append_log(root, session_name, &format!("parent nudge failed: {err}"));
             }
@@ -621,7 +660,9 @@ fn watch_loop(ctx: &Ctx, root: &Path, session_name: &str, origin: &str, token: &
         if stop_requested(root, session_name, token) {
             return Ok(());
         }
-        if !session::exists(&ctx.tmux, session_name) || !origin_is_alive(ctx, origin) {
+        if session::origin_pane(&ctx.tmux, session_name).as_deref() != Some(origin)
+            || !origin_is_alive(ctx, origin)
+        {
             return Ok(());
         }
         let captured = match capture(&ctx.tmux, origin, Some(30), true, false) {
@@ -668,14 +709,14 @@ pub fn run_foreground(ctx: &Ctx, args: WatchTargetArgs) -> Result<()> {
         return Ok(());
     };
     if !origin_is_alive(ctx, &origin) {
-        session::set_watch_armed(&ctx.tmux, &session_name, false);
+        session::set_watch_armed(&ctx.tmux, &origin, false);
         return Ok(());
     }
     let root = watch_root(ctx);
-    let guard = match PidGuard::acquire(&root, &session_name) {
+    let guard = match PidGuard::acquire(&root, &session_name, &origin) {
         Ok(guard) => guard,
         Err(err) => {
-            session::set_watch_armed(&ctx.tmux, &session_name, false);
+            session::set_watch_armed(&ctx.tmux, &origin, false);
             return Err(err);
         }
     };
@@ -685,7 +726,7 @@ pub fn run_foreground(ctx: &Ctx, args: WatchTargetArgs) -> Result<()> {
     session::set_watch_armed(&ctx.tmux, &session_name, true);
     append_log(&root, &session_name, "watcher started");
     let result = watch_loop(ctx, &root, &session_name, &origin, &guard.record.token);
-    session::set_watch_armed(&ctx.tmux, &session_name, false);
+    session::set_watch_armed(&ctx.tmux, &origin, false);
     append_log(&root, &session_name, "watcher stopped");
     result
 }
@@ -741,35 +782,44 @@ pub fn list_watchers(ctx: &Ctx) -> Result<()> {
     Ok(())
 }
 
-/// Stop the watcher recorded for one session and clear its armed marker.
-pub fn stop_watcher(ctx: &Ctx, args: WatchTargetArgs) -> Result<()> {
-    let session_name = session::resolve_existing_name(&ctx.tmux, &ctx.cfg, &args.target);
+/// Stop a live watcher without failing when the session has none.
+pub fn stop_if_running(ctx: &Ctx, session_name: &str) -> Result<bool> {
     let root = watch_root(ctx);
-    let path = pidfile_path(&root, &session_name);
+    let path = pidfile_path(&root, session_name);
     let Some(process) = active_process(&path)? else {
-        die(
-            code::NOT_FOUND,
-            format!("No watcher for session {session_name}"),
-        );
+        session::set_watch_armed(&ctx.tmux, session_name, false);
+        return Ok(false);
     };
-    let stop_path = stopfile_path(&root, &session_name);
+    let stop_path = stopfile_path(&root, session_name);
     std::fs::write(&stop_path, &process.token).context("requesting watcher stop")?;
     for _ in 0..100 {
         match active_process(&path)? {
             None => {
                 clear_stop_request(&stop_path, &process.token);
-                session::set_watch_armed(&ctx.tmux, &session_name, false);
-                append_log(&root, &session_name, "watcher stopped by command");
-                return Ok(());
+                session::set_watch_armed(&ctx.tmux, &process.origin, false);
+                append_log(&root, session_name, "watcher stopped by command");
+                return Ok(true);
             }
             Some(current) if current.token != process.token => {
                 clear_stop_request(&stop_path, &process.token);
-                return Ok(());
+                return Ok(true);
             }
             Some(_) => std::thread::sleep(Duration::from_millis(50)),
         }
     }
     bail!("watcher did not stop within 5s for session {session_name}")
+}
+
+/// Stop the watcher recorded for one session and clear its armed marker.
+pub fn stop_watcher(ctx: &Ctx, args: WatchTargetArgs) -> Result<()> {
+    let session_name = session::resolve_existing_name(&ctx.tmux, &ctx.cfg, &args.target);
+    if !stop_if_running(ctx, &session_name)? {
+        die(
+            code::NOT_FOUND,
+            format!("No watcher for session {session_name}"),
+        );
+    }
+    Ok(())
 }
 
 fn clear_stop_request(path: &Path, token: &str) {
@@ -781,8 +831,8 @@ fn clear_stop_request(path: &Path, token: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        active_process, notify_command, pidfile_path, stop_requested, PidGuard, RuleSet,
-        WatchDecision, WatchState,
+        active_process, notify_command, nudge_message, pidfile_path, stop_requested, PidGuard,
+        RuleSet, WatchDecision, WatchState,
     };
     use crate::config::{WatchAction, WatchCfg, WatchRuleCfg};
     use std::process::Command;
@@ -881,22 +931,49 @@ mod tests {
     fn pidfile_lock_enforces_single_watcher_ownership() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        let first = PidGuard::acquire(root, "tpp/test").unwrap().unwrap();
+        let first = PidGuard::acquire(root, "tpp/test", "%1").unwrap().unwrap();
         assert_eq!(
             active_process(&pidfile_path(root, "tpp/test")).unwrap(),
             Some(first.record.clone())
         );
-        assert!(PidGuard::acquire(root, "tpp/test").unwrap().is_none());
+        assert!(PidGuard::acquire(root, "tpp/test", "%1").unwrap().is_none());
         assert!(!stop_requested(root, "tpp/test", &first.record.token));
 
-        std::fs::write(&first.stop_path, &first.record.token).unwrap();
-        assert!(stop_requested(root, "tpp/test", &first.record.token));
+        let second = PidGuard::acquire(root, "tpp/test", "%2").unwrap().unwrap();
+        assert_eq!(
+            active_process(&pidfile_path(root, "tpp/test")).unwrap(),
+            Some(second.record.clone())
+        );
         drop(first);
         assert_eq!(
             active_process(&pidfile_path(root, "tpp/test")).unwrap(),
-            None
+            Some(second.record.clone())
         );
-        assert!(PidGuard::acquire(root, "tpp/test").unwrap().is_some());
+        std::fs::write(&second.stop_path, &second.record.token).unwrap();
+        assert!(stop_requested(root, "tpp/test", &second.record.token));
+        drop(second);
+        assert!(PidGuard::acquire(root, "tpp/test", "%3").unwrap().is_some());
+    }
+
+    #[test]
+    fn parent_nudge_neutralizes_shell_active_screen_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("injected");
+        let dangerous = format!(
+            "$(touch {}) ; `touch {}`",
+            marker.display(),
+            marker.display()
+        );
+        let message = nudge_message("tpp/$(false)", &dangerous, &dangerous);
+
+        let _ = Command::new("sh")
+            .args(["-c", &message])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        assert!(!marker.exists());
+        assert!(message.contains("＄（touch"));
+        assert!(message.contains("；"));
     }
 
     #[test]

@@ -486,6 +486,164 @@ fn command_session_arms_one_watcher_with_parent_metadata() {
 }
 
 #[test]
+fn watched_session_can_be_removed_and_recreated_under_the_same_name() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        assert_success(&run_tpp(
+            &server,
+            tmp.path(),
+            &[
+                "new",
+                "-s",
+                "codex/reused-watch",
+                "--",
+                "sh",
+                "-c",
+                "sleep 30",
+            ],
+        ));
+        let listed = wait_for_watch_list(&server, tmp.path(), "tpp/codex/reused-watch");
+        let rows: serde_json::Value = serde_json::from_str(&listed).unwrap();
+        assert_eq!(rows.as_array().unwrap().len(), 1);
+        std::thread::sleep(Duration::from_millis(200));
+        let armed = run_tmux(
+            &server,
+            &[
+                "show-option",
+                "-qv",
+                "-t",
+                "tpp/codex/reused-watch",
+                "@tpp_watch",
+            ],
+        );
+        assert_success(&armed);
+        assert_eq!(String::from_utf8_lossy(&armed.stdout).trim(), "1");
+        assert_success(&run_tpp(&server, tmp.path(), &["rm", "codex/reused-watch"]));
+    }
+}
+
+#[test]
+fn renaming_a_watched_session_restarts_its_watcher() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "new",
+            "-s",
+            "codex/watch-before-rename",
+            "--",
+            "sh",
+            "-c",
+            "sleep 30",
+        ],
+    ));
+    wait_for_watch_list(&server, tmp.path(), "tpp/codex/watch-before-rename");
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "rename",
+            "codex/watch-before-rename",
+            "codex/watch-after-rename",
+        ],
+    ));
+
+    let listed = wait_for_watch_list(&server, tmp.path(), "tpp/codex/watch-after-rename");
+    let rows: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 1);
+    assert_eq!(rows[0]["session"], "tpp/codex/watch-after-rename");
+    let armed = run_tmux(
+        &server,
+        &[
+            "show-option",
+            "-qv",
+            "-t",
+            "tpp/codex/watch-after-rename",
+            "@tpp_watch",
+        ],
+    );
+    assert_success(&armed);
+    assert_eq!(String::from_utf8_lossy(&armed.stdout).trim(), "1");
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["rm", "codex/watch-after-rename"],
+    ));
+}
+
+#[test]
+fn parent_nudge_does_not_execute_captured_shell_syntax() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let config_dir = tmp.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "[watch]\npoll = \"1s\"\nprompt_stable = \"1s\"\nstuck_after = \"1s\"\n",
+    )
+    .unwrap();
+    assert_success(&run_tmux(
+        &server,
+        &["new-session", "-d", "-s", "watch-shell-parent", "zsh"],
+    ));
+    let parent = run_tmux(
+        &server,
+        &[
+            "display-message",
+            "-p",
+            "-t",
+            "watch-shell-parent",
+            "#{pane_id}",
+        ],
+    );
+    assert_success(&parent);
+    let parent = String::from_utf8_lossy(&parent.stdout).trim().to_string();
+    let marker = tmp.path().join("nudge-injected");
+    let blocker = format!("$(touch {})", marker.display());
+    let command = format!("printf '%s\\n' {}; sleep 30", shell_quote(&blocker));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "new",
+            "-s",
+            "codex/nudge-safe",
+            "--parent-pane",
+            &parent,
+            "--",
+            "sh",
+            "-c",
+            &command,
+        ],
+    ));
+
+    let parent_capture = wait_for_raw_capture(&server, &parent, "[tpp:tpp/codex/nudge-safe]");
+    assert!(parent_capture.contains("＄（touch"), "{parent_capture}");
+    assert!(!marker.exists());
+
+    assert_success(&run_tpp(&server, tmp.path(), &["rm", "codex/nudge-safe"]));
+    assert_success(&run_tmux(
+        &server,
+        &["kill-session", "-t", "watch-shell-parent"],
+    ));
+}
+
+#[test]
 fn bare_new_and_default_run_do_not_arm_watchers() {
     if !tmux_available() {
         return;
