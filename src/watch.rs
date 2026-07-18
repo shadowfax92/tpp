@@ -1,13 +1,15 @@
 //! Per-session stable-screen detection and watchdog process lifecycle.
 
 use std::collections::hash_map::DefaultHasher;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::hash::{Hash, Hasher};
-use std::io::{ErrorKind, Write};
+use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use regex::Regex;
@@ -232,11 +234,11 @@ pub fn validate_config(cfg: &WatchCfg) -> Result<()> {
     WatchEngine::new(cfg).map(|_| ())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct WatchProcess {
     session: String,
     pid: u32,
-    process_start: String,
+    token: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -248,60 +250,63 @@ struct WatchListRow {
 
 struct PidGuard {
     path: PathBuf,
-    pid: u32,
-    process_start: String,
+    stop_path: PathBuf,
+    record: WatchProcess,
+    lock: File,
 }
 
 impl PidGuard {
     fn acquire(root: &Path, session_name: &str) -> Result<Option<Self>> {
         create_private_dir_all(root)?;
         let path = pidfile_path(root, session_name);
+        let stop_path = stopfile_path(root, session_name);
         loop {
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(mut file) => {
-                    let pid = std::process::id();
-                    let process_start =
-                        process_start(pid).context("reading watcher process start time")?;
-                    let record = WatchProcess {
-                        session: session_name.to_string(),
-                        pid,
-                        process_start: process_start.clone(),
-                    };
-                    if let Err(err) = serde_json::to_writer(&mut file, &record) {
-                        let _ = std::fs::remove_file(&path);
-                        return Err(err).context("writing watcher pidfile");
-                    }
-                    writeln!(file)?;
-                    return Ok(Some(Self {
-                        path,
-                        pid,
-                        process_start,
-                    }));
-                }
-                Err(err) if err.kind() == ErrorKind::AlreadyExists => {
-                    if read_process(&path).is_some_and(|process| process_matches(&process)) {
-                        return Ok(None);
-                    }
-                    match std::fs::remove_file(&path) {
-                        Ok(()) => {}
-                        Err(remove_err) if remove_err.kind() == ErrorKind::NotFound => {}
-                        Err(remove_err) => {
-                            return Err(remove_err).context("removing stale pidfile")
-                        }
-                    }
-                }
-                Err(err) => return Err(err).context("creating watcher pidfile"),
+            let mut lock = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&path)
+                .context("opening watcher pidfile")?;
+            if !same_file(&lock, &path) {
+                continue;
             }
+            if !try_lock_exclusive(&lock)? {
+                return Ok(None);
+            }
+            if !same_file(&lock, &path) {
+                continue;
+            }
+            let record = WatchProcess {
+                session: session_name.to_string(),
+                pid: std::process::id(),
+                token: watch_token(),
+            };
+            lock.set_len(0)?;
+            lock.seek(SeekFrom::Start(0))?;
+            serde_json::to_writer(&mut lock, &record).context("writing watcher pidfile")?;
+            writeln!(lock)?;
+            lock.flush()?;
+            let _ = std::fs::remove_file(&stop_path);
+            return Ok(Some(Self {
+                path,
+                stop_path,
+                record,
+                lock,
+            }));
         }
     }
 }
 
 impl Drop for PidGuard {
     fn drop(&mut self) {
-        if read_process(&self.path).is_some_and(|process| {
-            process.pid == self.pid && process.process_start == self.process_start
-        }) {
+        if same_file(&self.lock, &self.path)
+            && read_process_file(&mut self.lock).as_ref() == Some(&self.record)
+        {
             let _ = std::fs::remove_file(&self.path);
+        }
+        if std::fs::read_to_string(&self.stop_path).is_ok_and(|token| token == self.record.token) {
+            let _ = std::fs::remove_file(&self.stop_path);
         }
     }
 }
@@ -319,29 +324,76 @@ fn pidfile_path(root: &Path, session_name: &str) -> PathBuf {
     root.join(format!("{}.pid", encode_state_component(session_name)))
 }
 
-fn read_process(path: &Path) -> Option<WatchProcess> {
-    let text = std::fs::read_to_string(path).ok()?;
+fn stopfile_path(root: &Path, session_name: &str) -> PathBuf {
+    root.join(format!("{}.stop", encode_state_component(session_name)))
+}
+
+fn watch_token() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    format!("{}-{nanos}", std::process::id())
+}
+
+fn same_file(file: &File, path: &Path) -> bool {
+    let Ok(opened) = file.metadata() else {
+        return false;
+    };
+    let Ok(current) = std::fs::metadata(path) else {
+        return false;
+    };
+    opened.dev() == current.dev() && opened.ino() == current.ino()
+}
+
+fn try_lock_exclusive(file: &File) -> std::io::Result<bool> {
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result == 0 {
+        return Ok(true);
+    }
+    let err = std::io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::EAGAIN) || err.raw_os_error() == Some(libc::EWOULDBLOCK) {
+        Ok(false)
+    } else {
+        Err(err)
+    }
+}
+
+fn read_process_file(file: &mut File) -> Option<WatchProcess> {
+    file.seek(SeekFrom::Start(0)).ok()?;
+    let mut text = String::new();
+    file.read_to_string(&mut text).ok()?;
     serde_json::from_str(&text).ok()
 }
 
-fn process_start(pid: u32) -> Option<String> {
-    if pid == 0 {
-        return None;
+fn read_locked_process(file: &mut File) -> Option<WatchProcess> {
+    for _ in 0..20 {
+        if let Some(process) = read_process_file(file) {
+            return Some(process);
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
-    let output = Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "lstart="])
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let started = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!started.is_empty()).then_some(started)
+    None
 }
 
-fn process_matches(process: &WatchProcess) -> bool {
-    process_start(process.pid).is_some_and(|started| started == process.process_start)
+fn active_process(path: &Path) -> Result<Option<WatchProcess>> {
+    let mut file = match OpenOptions::new().read(true).write(true).open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).context("opening watcher pidfile"),
+    };
+    if !same_file(&file, path) {
+        return Ok(None);
+    }
+    if try_lock_exclusive(&file)? {
+        if same_file(&file, path) {
+            let _ = std::fs::remove_file(path);
+        }
+        return Ok(None);
+    }
+    read_locked_process(&mut file)
+        .map(Some)
+        .with_context(|| format!("reading active watcher pidfile {}", path.display()))
 }
 
 fn append_log(root: &Path, session_name: &str, message: &str) {
@@ -464,10 +516,60 @@ fn run_notify(
     Ok(())
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShellQuote {
+    Unquoted,
+    Single,
+    Double,
+}
+
+/// Render placeholders as quoted environment expansions without interpolating screen text.
 fn notify_command(template: &str) -> String {
-    template
-        .replace("{session}", "${TPP_SESSION}")
-        .replace("{reason}", "${TPP_REASON}")
+    let mut rendered = String::with_capacity(template.len());
+    let mut quote = ShellQuote::Unquoted;
+    let mut offset = 0;
+    while offset < template.len() {
+        let remaining = &template[offset..];
+        let placeholder = if remaining.starts_with("{session}") {
+            Some(("TPP_SESSION", "{session}".len()))
+        } else if remaining.starts_with("{reason}") {
+            Some(("TPP_REASON", "{reason}".len()))
+        } else {
+            None
+        };
+        if let Some((name, length)) = placeholder {
+            match quote {
+                ShellQuote::Unquoted => rendered.push_str(&format!("\"${{{name}}}\"")),
+                ShellQuote::Single => rendered.push_str(&format!("'\"${{{name}}}\"'")),
+                ShellQuote::Double => rendered.push_str(&format!("${{{name}}}")),
+            }
+            offset += length;
+            continue;
+        }
+
+        let ch = remaining.chars().next().expect("offset is within template");
+        rendered.push(ch);
+        offset += ch.len_utf8();
+        if ch == '\\' && quote != ShellQuote::Single {
+            if let Some(next) = template[offset..].chars().next() {
+                let escaped =
+                    quote == ShellQuote::Unquoted || matches!(next, '$' | '`' | '"' | '\\' | '\n');
+                if escaped {
+                    rendered.push(next);
+                    offset += next.len_utf8();
+                    continue;
+                }
+            }
+        }
+        match (quote, ch) {
+            (ShellQuote::Unquoted, '\'') => quote = ShellQuote::Single,
+            (ShellQuote::Unquoted, '"') => quote = ShellQuote::Double,
+            (ShellQuote::Single, '\'') => quote = ShellQuote::Unquoted,
+            (ShellQuote::Double, '"') => quote = ShellQuote::Unquoted,
+            _ => {}
+        }
+    }
+    rendered
 }
 
 fn escalate(ctx: &Ctx, root: &Path, session_name: &str, reason: &str, screen: &str) {
@@ -492,11 +594,33 @@ fn escalate(ctx: &Ctx, root: &Path, session_name: &str, reason: &str, screen: &s
     }
 }
 
-fn watch_loop(ctx: &Ctx, root: &Path, session_name: &str, origin: &str) -> Result<()> {
+fn stop_requested(root: &Path, session_name: &str, token: &str) -> bool {
+    std::fs::read_to_string(stopfile_path(root, session_name))
+        .is_ok_and(|requested| requested == token)
+}
+
+fn wait_for_stop(root: &Path, session_name: &str, token: &str, duration: Duration) -> bool {
+    let deadline = Instant::now() + duration;
+    loop {
+        if stop_requested(root, session_name, token) {
+            return true;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(100)));
+    }
+}
+
+fn watch_loop(ctx: &Ctx, root: &Path, session_name: &str, origin: &str, token: &str) -> Result<()> {
     let mut engine = WatchEngine::new(&ctx.cfg.watch)?;
     let started = Instant::now();
     let poll = Duration::from_secs(ctx.cfg.watch.poll.as_secs());
     loop {
+        if stop_requested(root, session_name, token) {
+            return Ok(());
+        }
         if !session::exists(&ctx.tmux, session_name) || !origin_is_alive(ctx, origin) {
             return Ok(());
         }
@@ -526,7 +650,9 @@ fn watch_loop(ctx: &Ctx, root: &Path, session_name: &str, origin: &str) -> Resul
             }
             None => {}
         }
-        std::thread::sleep(poll);
+        if wait_for_stop(root, session_name, token, poll) {
+            return Ok(());
+        }
     }
 }
 
@@ -553,12 +679,12 @@ pub fn run_foreground(ctx: &Ctx, args: WatchTargetArgs) -> Result<()> {
             return Err(err);
         }
     };
-    let Some(_guard) = guard else {
+    let Some(guard) = guard else {
         return Ok(());
     };
     session::set_watch_armed(&ctx.tmux, &session_name, true);
     append_log(&root, &session_name, "watcher started");
-    let result = watch_loop(ctx, &root, &session_name, &origin);
+    let result = watch_loop(ctx, &root, &session_name, &origin, &guard.record.token);
     session::set_watch_armed(&ctx.tmux, &session_name, false);
     append_log(&root, &session_name, "watcher stopped");
     result
@@ -576,11 +702,8 @@ fn active_watchers(root: &Path) -> Result<Vec<WatchProcess>> {
         if entry.path().extension().and_then(|ext| ext.to_str()) != Some("pid") {
             continue;
         }
-        match read_process(&entry.path()) {
-            Some(process) if process_matches(&process) => active.push(process),
-            _ => {
-                let _ = std::fs::remove_file(entry.path());
-            }
+        if let Some(process) = active_process(&entry.path())? {
+            active.push(process);
         }
     }
     active.sort_by(|left, right| left.session.cmp(&right.session));
@@ -623,40 +746,46 @@ pub fn stop_watcher(ctx: &Ctx, args: WatchTargetArgs) -> Result<()> {
     let session_name = session::resolve_existing_name(&ctx.tmux, &ctx.cfg, &args.target);
     let root = watch_root(ctx);
     let path = pidfile_path(&root, &session_name);
-    let Some(process) = read_process(&path) else {
+    let Some(process) = active_process(&path)? else {
         die(
             code::NOT_FOUND,
             format!("No watcher for session {session_name}"),
         );
     };
-    if process_matches(&process) {
-        let status = Command::new("kill")
-            .args(["-TERM", &process.pid.to_string()])
-            .status()
-            .context("stopping session watcher")?;
-        if !status.success() {
-            bail!("could not stop watcher pid {}", process.pid);
-        }
-        for _ in 0..40 {
-            if !process_matches(&process) {
-                break;
+    let stop_path = stopfile_path(&root, &session_name);
+    std::fs::write(&stop_path, &process.token).context("requesting watcher stop")?;
+    for _ in 0..100 {
+        match active_process(&path)? {
+            None => {
+                clear_stop_request(&stop_path, &process.token);
+                session::set_watch_armed(&ctx.tmux, &session_name, false);
+                append_log(&root, &session_name, "watcher stopped by command");
+                return Ok(());
             }
-            std::thread::sleep(Duration::from_millis(25));
+            Some(current) if current.token != process.token => {
+                clear_stop_request(&stop_path, &process.token);
+                return Ok(());
+            }
+            Some(_) => std::thread::sleep(Duration::from_millis(50)),
         }
     }
-    let _ = std::fs::remove_file(path);
-    session::set_watch_armed(&ctx.tmux, &session_name, false);
-    append_log(&root, &session_name, "watcher stopped by command");
-    Ok(())
+    bail!("watcher did not stop within 5s for session {session_name}")
+}
+
+fn clear_stop_request(path: &Path, token: &str) {
+    if std::fs::read_to_string(path).is_ok_and(|requested| requested == token) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        notify_command, process_matches, process_start, RuleSet, WatchDecision, WatchProcess,
-        WatchState,
+        active_process, notify_command, pidfile_path, stop_requested, PidGuard, RuleSet,
+        WatchDecision, WatchState,
     };
     use crate::config::{WatchAction, WatchCfg, WatchRuleCfg};
+    use std::process::Command;
     use std::time::Duration;
 
     fn seconds(value: u64) -> Duration {
@@ -728,26 +857,46 @@ mod tests {
     #[test]
     fn notify_placeholders_expand_through_quoted_environment_references() {
         assert_eq!(
-            notify_command("notify --title {session} --message \"{reason}\""),
-            "notify --title ${TPP_SESSION} --message \"${TPP_REASON}\""
+            notify_command("notify --title {session} --message \"{reason}\" --tag '{session}'"),
+            "notify --title \"${TPP_SESSION}\" --message \"${TPP_REASON}\" --tag ''\"${TPP_SESSION}\"''"
+        );
+
+        let output = Command::new("sh")
+            .args([
+                "-c",
+                &notify_command("printf '<%s>|<%s>|<%s>' {session} \"{reason}\" '{session}'"),
+            ])
+            .env("TPP_SESSION", "space * $(false)")
+            .env("TPP_REASON", "reason ; echo injected")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "<space * $(false)>|<reason ; echo injected>|<space * $(false)>"
         );
     }
 
     #[test]
-    fn watcher_identity_requires_pid_and_process_start() {
-        let pid = std::process::id();
-        let started = process_start(pid).unwrap();
-        let process = WatchProcess {
-            session: "tpp/test".to_string(),
-            pid,
-            process_start: started.clone(),
-        };
+    fn pidfile_lock_enforces_single_watcher_ownership() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let first = PidGuard::acquire(root, "tpp/test").unwrap().unwrap();
+        assert_eq!(
+            active_process(&pidfile_path(root, "tpp/test")).unwrap(),
+            Some(first.record.clone())
+        );
+        assert!(PidGuard::acquire(root, "tpp/test").unwrap().is_none());
+        assert!(!stop_requested(root, "tpp/test", &first.record.token));
 
-        assert!(process_matches(&process));
-        assert!(!process_matches(&WatchProcess {
-            process_start: format!("{started}-different"),
-            ..process
-        }));
+        std::fs::write(&first.stop_path, &first.record.token).unwrap();
+        assert!(stop_requested(root, "tpp/test", &first.record.token));
+        drop(first);
+        assert_eq!(
+            active_process(&pidfile_path(root, "tpp/test")).unwrap(),
+            None
+        );
+        assert!(PidGuard::acquire(root, "tpp/test").unwrap().is_some());
     }
 
     #[test]
