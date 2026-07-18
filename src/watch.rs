@@ -967,7 +967,7 @@ fn clear_stop_request(path: &Path, token: &str) {
 mod tests {
     use super::{
         active_process, notify_command, nudge_message, pidfile_path, stop_requested, PidGuard,
-        RuleAction, RuleSet, WatchDecision, WatchState,
+        RuleAction, RuleSet, WatchDecision, WatchEngine, WatchState,
     };
     use crate::config::{WatchAction, WatchCfg, WatchRuleCfg};
     use std::process::Command;
@@ -978,14 +978,28 @@ mod tests {
     }
 
     #[test]
-    fn safety_checks_builtin_sends_down_then_enter() {
+    fn safety_checks_fixture_matches_only_the_keep_waiting_rule() {
+        let screen = r#"  Additional safety checks
+  This request requires additional safety checks, which can take extra time. Hang tight or retry with a faster model for a quicker response, though it may be less capable of handling complex requests.
+
+› 1. Retry with a faster model
+  2. Keep waiting
+  3. Learn more"#;
         let rules = RuleSet::compile(&[], true).unwrap();
-        let matched = rules.matched("Retry with a faster model").unwrap();
+        let matched = rules.matched(screen).unwrap();
 
         assert_eq!(
             matched.action,
             super::RuleAction::Send(vec!["Down".to_string(), "Enter".to_string()])
         );
+        for enter_pattern in [
+            "Press enter to continue",
+            "Enter to confirm",
+            "Do you trust",
+            "trust this folder",
+        ] {
+            assert!(!screen.contains(enter_pattern));
+        }
     }
 
     #[test]
@@ -1028,6 +1042,11 @@ mod tests {
         let rules = RuleSet::compile(
             &[
                 WatchRuleCfg {
+                    pattern: "Retry with a faster model".to_string(),
+                    action: WatchAction::Keys,
+                    keys: vec!["Up".to_string(), "Enter".to_string()],
+                },
+                WatchRuleCfg {
                     pattern: "Press enter".to_string(),
                     action: WatchAction::Ignore,
                     keys: Vec::new(),
@@ -1045,6 +1064,10 @@ mod tests {
         let matched = rules.matched("Press enter to continue").unwrap();
         assert_eq!(matched.source, "Press enter");
         assert_eq!(matched.action, RuleAction::Ignore);
+        assert_eq!(
+            rules.matched("Retry with a faster model").unwrap().action,
+            RuleAction::Send(vec!["Up".to_string(), "Enter".to_string()])
+        );
     }
 
     #[test]
@@ -1189,6 +1212,97 @@ mod tests {
                 keys: vec!["Enter".to_string()]
             })
         );
+    }
+
+    #[test]
+    fn keys_rule_uses_send_gates_and_resets_after_screen_change() {
+        let cfg = WatchCfg::default();
+        let rules = RuleSet::compile(&[], true).unwrap();
+        let matched = rules.matched("Retry with a faster model").unwrap();
+        let mut state = WatchState::default();
+
+        assert_eq!(state.observe(seconds(0), 1, Some(&matched), &cfg), None);
+        assert_eq!(state.observe(seconds(4), 1, Some(&matched), &cfg), None);
+        assert_eq!(
+            state.observe(seconds(5), 1, Some(&matched), &cfg),
+            Some(WatchDecision::Send {
+                pattern: "Retry with a faster model".to_string(),
+                keys: vec!["Down".to_string(), "Enter".to_string()]
+            })
+        );
+        assert_eq!(
+            state.observe(seconds(8), 1, Some(&matched), &cfg),
+            Some(WatchDecision::Escalate {
+                reason: "screen unchanged after automatic keys".to_string()
+            })
+        );
+
+        assert_eq!(state.observe(seconds(9), 2, Some(&matched), &cfg), None);
+        assert!(matches!(
+            state.observe(seconds(14), 2, Some(&matched), &cfg),
+            Some(WatchDecision::Send { .. })
+        ));
+    }
+
+    #[test]
+    fn keys_rule_escalates_when_send_budget_is_exhausted() {
+        let cfg = WatchCfg {
+            max_enters: 0,
+            ..WatchCfg::default()
+        };
+        let rules = RuleSet::compile(&[], true).unwrap();
+        let matched = rules.matched("Retry with a faster model").unwrap();
+        let mut state = WatchState::default();
+
+        state.observe(seconds(0), 1, Some(&matched), &cfg);
+        assert_eq!(
+            state.observe(seconds(5), 1, Some(&matched), &cfg),
+            Some(WatchDecision::Escalate {
+                reason: "automatic key-send limit reached for \"Retry with a faster model\""
+                    .to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn disabling_builtins_leaves_config_rules_and_unknown_stall_handling() {
+        let disabled = WatchCfg {
+            builtin_rules: false,
+            ..WatchCfg::default()
+        };
+        let mut engine = WatchEngine::new(&disabled).unwrap();
+
+        assert_eq!(
+            engine.observe(seconds(0), 1, "Retry with a faster model"),
+            None
+        );
+        assert_eq!(
+            engine.observe(seconds(29), 1, "Retry with a faster model"),
+            None
+        );
+        assert_eq!(
+            engine.observe(seconds(30), 1, "Retry with a faster model"),
+            Some(WatchDecision::Escalate {
+                reason: "screen unchanged for 30s".to_string()
+            })
+        );
+
+        let configured = WatchCfg {
+            builtin_rules: false,
+            rules: vec![WatchRuleCfg {
+                pattern: "custom menu".to_string(),
+                action: WatchAction::Keys,
+                keys: vec!["Down".to_string(), "Enter".to_string()],
+            }],
+            ..WatchCfg::default()
+        };
+        let mut engine = WatchEngine::new(&configured).unwrap();
+        assert_eq!(engine.observe(seconds(0), 2, "custom menu"), None);
+        assert!(matches!(
+            engine.observe(seconds(5), 2, "custom menu"),
+            Some(WatchDecision::Send { keys, .. })
+                if keys == ["Down".to_string(), "Enter".to_string()]
+        ));
     }
 
     #[test]
