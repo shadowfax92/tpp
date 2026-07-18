@@ -8,7 +8,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use tpp::cli::{Cli, Cmd};
+use tpp::cli::{Cli, Cmd, WatchCommand};
 use tpp::commands::select::{normalize_explicit, parse_fzf_output};
 
 static NEXT_SOCKET: AtomicU64 = AtomicU64::new(0);
@@ -55,6 +55,8 @@ fn run_tpp(server: &TmuxServer, root: &std::path::Path, args: &[&str]) -> Output
         .args(args)
         .env("TPP_CONFIG_DIR", root.join("config"))
         .env("TPP_STATE_DIR", root.join("state"))
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
         .output()
         .expect("run tpp")
 }
@@ -71,6 +73,8 @@ fn run_tpp_stdin(
         .args(args)
         .env("TPP_CONFIG_DIR", root.join("config"))
         .env("TPP_STATE_DIR", root.join("state"))
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -133,6 +137,20 @@ fn wait_for_file_lines(path: &std::path::Path, count: usize) -> String {
         "{} did not reach {count} lines; last contents:\n{last}",
         path.display()
     );
+}
+
+fn wait_for_watch_list(server: &TmuxServer, root: &std::path::Path, needle: &str) -> String {
+    let mut last = String::new();
+    for _ in 0..50 {
+        let out = run_tpp(server, root, &["--json", "watch", "ls"]);
+        assert_success(&out);
+        last = String::from_utf8_lossy(&out.stdout).to_string();
+        if last.contains(needle) {
+            return last;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!("watch list did not contain {needle:?}:\n{last}");
 }
 
 fn assert_success(out: &Output) {
@@ -341,6 +359,314 @@ fn run_captures_trailing_command() {
         Some(Cmd::Run(a)) => assert_eq!(a.command, vec!["npm", "test"]),
         other => panic!("expected Run, got {other:?}"),
     }
+}
+
+#[test]
+fn watch_session_flags_parse_with_frozen_names() {
+    match parse(&["run", "--watch", "--", "npm", "test"]).cmd {
+        Some(Cmd::Run(args)) => assert!(args.watch),
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    match parse(&["new", "--no-watch", "--parent-pane", "%42", "--", "claude"]).cmd {
+        Some(Cmd::New(args)) => {
+            assert!(args.no_watch);
+            assert_eq!(args.parent_pane.as_deref(), Some("%42"));
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+}
+
+#[test]
+fn watch_subcommands_parse_with_frozen_names() {
+    match parse(&["watch", "run", "-t", "codex/worker"]).cmd {
+        Some(Cmd::Watch(args)) => match args.action {
+            WatchCommand::Run(target) => assert_eq!(target.target, "codex/worker"),
+            other => panic!("unexpected watch command: {other:?}"),
+        },
+        other => panic!("unexpected command: {other:?}"),
+    }
+    assert!(matches!(
+        parse(&["watch", "ls"]).cmd,
+        Some(Cmd::Watch(args)) if matches!(args.action, WatchCommand::Ls)
+    ));
+    assert!(matches!(
+        parse(&["watch", "stop", "--target", "codex/worker"]).cmd,
+        Some(Cmd::Watch(args))
+            if matches!(&args.action, WatchCommand::Stop(target) if target.target == "codex/worker")
+    ));
+}
+
+#[test]
+fn command_session_arms_one_watcher_with_parent_metadata() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    assert_success(&run_tmux(
+        &server,
+        &["new-session", "-d", "-s", "watch-parent", "sleep 30"],
+    ));
+    let parent = run_tmux(
+        &server,
+        &["display-message", "-p", "-t", "watch-parent", "#{pane_id}"],
+    );
+    assert_success(&parent);
+    let parent = String::from_utf8_lossy(&parent.stdout).trim().to_string();
+
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "new",
+            "-s",
+            "codex/watched",
+            "--parent-pane",
+            &parent,
+            "--",
+            "sh",
+            "-c",
+            "sleep 30",
+        ],
+    ));
+    for (option, expected) in [("@tpp_parent_pane", parent.as_str()), ("@tpp_watch", "1")] {
+        let value = run_tmux(
+            &server,
+            &["show-option", "-qv", "-t", "tpp/codex/watched", option],
+        );
+        assert_success(&value);
+        assert_eq!(String::from_utf8_lossy(&value.stdout).trim(), expected);
+    }
+    let origin = run_tmux(
+        &server,
+        &[
+            "show-option",
+            "-qv",
+            "-t",
+            "tpp/codex/watched",
+            "@tpp_origin_pane",
+        ],
+    );
+    assert_success(&origin);
+    assert_ne!(String::from_utf8_lossy(&origin.stdout).trim(), parent);
+
+    let listed = wait_for_watch_list(&server, tmp.path(), "tpp/codex/watched");
+    let rows: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 1);
+
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["watch", "run", "-t", "codex/watched"],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["watch", "stop", "-t", "codex/watched"],
+    ));
+    let armed = run_tmux(
+        &server,
+        &[
+            "show-option",
+            "-qv",
+            "-t",
+            "tpp/codex/watched",
+            "@tpp_watch",
+        ],
+    );
+    assert_success(&armed);
+    assert!(armed.stdout.is_empty());
+    let listed = run_tpp(&server, tmp.path(), &["--json", "watch", "ls"]);
+    assert_success(&listed);
+    assert_eq!(String::from_utf8_lossy(&listed.stdout).trim(), "[]");
+
+    assert_success(&run_tpp(&server, tmp.path(), &["rm", "codex/watched"]));
+}
+
+#[test]
+fn watched_session_can_be_removed_and_recreated_under_the_same_name() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        assert_success(&run_tpp(
+            &server,
+            tmp.path(),
+            &[
+                "new",
+                "-s",
+                "codex/reused-watch",
+                "--",
+                "sh",
+                "-c",
+                "sleep 30",
+            ],
+        ));
+        let listed = wait_for_watch_list(&server, tmp.path(), "tpp/codex/reused-watch");
+        let rows: serde_json::Value = serde_json::from_str(&listed).unwrap();
+        assert_eq!(rows.as_array().unwrap().len(), 1);
+        std::thread::sleep(Duration::from_millis(200));
+        let armed = run_tmux(
+            &server,
+            &[
+                "show-option",
+                "-qv",
+                "-t",
+                "tpp/codex/reused-watch",
+                "@tpp_watch",
+            ],
+        );
+        assert_success(&armed);
+        assert_eq!(String::from_utf8_lossy(&armed.stdout).trim(), "1");
+        assert_success(&run_tpp(&server, tmp.path(), &["rm", "codex/reused-watch"]));
+    }
+}
+
+#[test]
+fn renaming_a_watched_session_restarts_its_watcher() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "new",
+            "-s",
+            "codex/watch-before-rename",
+            "--",
+            "sh",
+            "-c",
+            "sleep 30",
+        ],
+    ));
+    wait_for_watch_list(&server, tmp.path(), "tpp/codex/watch-before-rename");
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "rename",
+            "codex/watch-before-rename",
+            "codex/watch-after-rename",
+        ],
+    ));
+
+    let listed = wait_for_watch_list(&server, tmp.path(), "tpp/codex/watch-after-rename");
+    let rows: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 1);
+    assert_eq!(rows[0]["session"], "tpp/codex/watch-after-rename");
+    let armed = run_tmux(
+        &server,
+        &[
+            "show-option",
+            "-qv",
+            "-t",
+            "tpp/codex/watch-after-rename",
+            "@tpp_watch",
+        ],
+    );
+    assert_success(&armed);
+    assert_eq!(String::from_utf8_lossy(&armed.stdout).trim(), "1");
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["rm", "codex/watch-after-rename"],
+    ));
+}
+
+#[test]
+fn parent_nudge_does_not_execute_captured_shell_syntax() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let config_dir = tmp.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "[watch]\npoll = \"1s\"\nprompt_stable = \"1s\"\nstuck_after = \"1s\"\n",
+    )
+    .unwrap();
+    assert_success(&run_tmux(
+        &server,
+        &["new-session", "-d", "-s", "watch-shell-parent", "zsh"],
+    ));
+    let parent = run_tmux(
+        &server,
+        &[
+            "display-message",
+            "-p",
+            "-t",
+            "watch-shell-parent",
+            "#{pane_id}",
+        ],
+    );
+    assert_success(&parent);
+    let parent = String::from_utf8_lossy(&parent.stdout).trim().to_string();
+    let marker = tmp.path().join("nudge-injected");
+    let blocker = format!("$(touch {})", marker.display());
+    let command = format!("printf '%s\\n' {}; sleep 30", shell_quote(&blocker));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "new",
+            "-s",
+            "codex/nudge-safe",
+            "--parent-pane",
+            &parent,
+            "--",
+            "sh",
+            "-c",
+            &command,
+        ],
+    ));
+
+    let parent_capture = wait_for_raw_capture(&server, &parent, "[tpp:tpp/codex/nudge-safe]");
+    assert!(parent_capture.contains("＄（touch"), "{parent_capture}");
+    assert!(!marker.exists());
+
+    assert_success(&run_tpp(&server, tmp.path(), &["rm", "codex/nudge-safe"]));
+    assert_success(&run_tmux(
+        &server,
+        &["kill-session", "-t", "watch-shell-parent"],
+    ));
+}
+
+#[test]
+fn bare_new_and_default_run_do_not_arm_watchers() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    assert_success(&run_tpp(&server, tmp.path(), &["new", "-s", "bare-shell"]));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["run", "-s", "plain-run", "--", "sh", "-c", "sleep 30"],
+    ));
+
+    for session_name in ["tpp/bare-shell", "tpp/plain-run"] {
+        let armed = run_tmux(
+            &server,
+            &["show-option", "-qv", "-t", session_name, "@tpp_watch"],
+        );
+        assert_success(&armed);
+        assert!(armed.stdout.is_empty());
+    }
+    assert_success(&run_tpp(&server, tmp.path(), &["rm", "--all"]));
 }
 
 #[test]

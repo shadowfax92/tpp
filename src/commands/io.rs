@@ -147,14 +147,14 @@ fn body_text(file: Option<&Path>, stdin: bool, words: &[String]) -> Result<Strin
 
 /// Bracketed paste of arbitrary content: stage it in a tmux buffer via stdin (no arg
 /// escaping), paste with `-p` (bracketed) and `-d` (drop the buffer after).
-fn bracketed_paste(tmux: &Tmux, target: &str, body: &str) -> Result<()> {
+pub(crate) fn bracketed_paste(tmux: &Tmux, target: &str, body: &str) -> Result<()> {
     let buf = format!("tpp-{}", std::process::id());
     tmux.run_stdin(["load-buffer", "-b", &buf, "-"], body)?;
     tmux.run(["paste-buffer", "-t", &tgt(target), "-b", &buf, "-p", "-d"])?;
     Ok(())
 }
 
-fn strip_ansi(text: &str) -> String {
+pub(crate) fn strip_ansi(text: &str) -> String {
     let mut stripped = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(ch) = chars.next() {

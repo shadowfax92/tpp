@@ -9,11 +9,12 @@ pub mod paths;
 pub mod session;
 pub mod store;
 pub mod tmux;
+pub mod watch;
 
 use anyhow::Result;
 use clap::Parser;
 
-use cli::{Cli, Cmd, LsArgs};
+use cli::{Cli, Cmd, LsArgs, WatchCommand};
 use commands::{compat, io, lifecycle, meta, pane, Ctx};
 use config::Config;
 use paths::Paths;
@@ -51,6 +52,11 @@ pub fn run() -> Result<()> {
     match cmd {
         Cmd::Run(a) => lifecycle::run(&ctx, a),
         Cmd::New(a) => lifecycle::new(&ctx, a),
+        Cmd::Watch(a) => match a.action {
+            WatchCommand::Run(a) => watch::run_foreground(&ctx, a),
+            WatchCommand::Ls => watch::list_watchers(&ctx),
+            WatchCommand::Stop(a) => watch::stop_watcher(&ctx, a),
+        },
         Cmd::Ls(a) => lifecycle::ls(&ctx, a),
         Cmd::Attach(a) => lifecycle::attach(&ctx, a),
         Cmd::Send(a) => io::send(&ctx, a),

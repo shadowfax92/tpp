@@ -44,7 +44,7 @@ tpp doctor          # check tmux, show resolved socket / paths
 ```sh
 # By hand
 tpp                           # list all tpp sessions (defaults to `ls`)
-tpp new -s api -- npm run dev  # named detached session running a command
+tpp new -s api -- npm run dev  # detached command + stuck-screen watcher
 tpp attach api                 # attach (switch-client if you're already in tmux)
 tpp cat api                    # print its recent output
 tpp tail api                   # follow it live
@@ -53,6 +53,7 @@ tpp bind mediator --pane api --role mediator
 tpp paste -t pane:mediator --stdin
 tpp has api --alive            # 0 only while the root pane process is running
 tpp reap --dry-run             # preview stale detached sessions before cleanup
+tpp watch ls                   # list active per-session watchers
 tpp rm api                     # kill it
 
 # From a script / agent
@@ -71,8 +72,9 @@ Run `tpp <cmd> --help` for full flags. Aliases in parentheses.
 
 | Command | Does |
 |---|---|
-| `run` (`r`) | Run a command in a new detached session; prints its name. `--wait` streams to completion and exits with the command's status. |
-| `new` (`n`) | Create a detached session (your shell if no command). `--on-exit CMD` runs a shell hook once when the root command exits. `-A` = ok if it already exists. |
+| `run` (`r`) | Run a command in a new detached session; prints its name. `--wait` streams to completion and exits with the command's status. `--watch` opts into stuck-screen detection. |
+| `new` (`n`) | Create a detached session (your shell if no command). Command sessions get a watcher by default; `--no-watch` disables it and `--parent-pane` overrides the escalation target. `--on-exit CMD` runs a shell hook once when the root command exits. `-A` = ok if it already exists. |
+| `watch` | Control per-session watchers: `run -t NAME` (foreground/internal), `ls`, and `stop -t NAME`. |
 | `ls` (`l`, `list`) | List all tpp sessions. `--json` includes `state`, `pane_dead`, root `pid`, and `exit_status`; `-q` names-only; `--exited` includes recorded ones. |
 | `attach` (`a`) | Attach, or `switch-client` if you're already inside tmux. |
 | `rm` (`kill`) | Kill sessions. `--all` removes every tpp session, `--record` saves output first. |
@@ -122,6 +124,29 @@ the root pane remains inspectable even if the default config disables it. tpp st
 once-marker under its state dir, so later teardown does not double-fire. Hook failures are appended to
 `<state>/hooks/<socket>/on-exit.log` and do not change the tpp command's exit path. A tmux
 server crash or `kill-server` cannot be covered because tmux cannot run hooks after it dies.
+
+Command-bearing `tpp new` sessions also arm a detached watcher by default. Bare-shell sessions
+are not watched; use `new --no-watch` or `[watch] enabled = false` to opt out, and use
+`tpp run --watch -- <cmd>` to opt a `run` session in. Each watcher captures only the stored
+`@tpp_origin_pane`, ANSI-strips and hashes the last 30 lines, and resets whenever the screen
+changes. That screen-change rule keeps animated TUIs from being mistaken for stalls.
+
+User rules run before built-ins, first match wins. A stable known prompt is handled after
+`prompt_stable` (default `5s`); built-ins press Enter only for `Press enter to continue`,
+`Enter to confirm`, `Do you trust`, and `trust this folder`. The Claude idle marker
+`? for shortcuts` is ignored. Unmatched stable output escalates after `stuck_after` (default
+`30s`) without sending input. Automatic Enter is capped by `max_enters` and must produce a
+changed capture; otherwise the watcher escalates. Escalation fires once per unchanged episode
+and respects the per-session `cooldown`.
+
+When `new` is called inside tmux it stores the caller's raw pane id in `@tpp_parent_pane`;
+`--parent-pane TMUX_TARGET` overrides it. Escalation bracket-pastes one message plus Enter into
+that pane and can also run `[watch] notify`. Notify commands receive `TPP_SESSION`,
+`TPP_SESSION_NAME`, `TPP_REASON`, `TPP_TAIL` (last five lines), `TPP_DIR`, and
+`TPP_PARENT_PANE`; only `{session}` and `{reason}` are substituted in the command string, so
+captured screen text stays out of shell templates. Shell-active punctuation in dynamic parent-nudge
+fields is rendered inert before paste. Watcher pidfiles and action logs live under
+`<state>/watch/<socket>/`; `@tpp_watch=1` marks an armed session.
 
 `tpp reap` is the conservative cleanup path for stale detached sessions. It never reaps attached
 sessions, reaps dead root panes with an `exited` reason, and reaps live sessions only when the
@@ -184,6 +209,22 @@ timeout_ms = 30000
 [reap]
 ttl = "6h"               # idle threshold for detached live sessions; "0" disables that
 record = true            # save scrollback before killing a reaped session
+
+[watch]
+enabled = true
+poll = "3s"
+prompt_stable = "5s"
+stuck_after = "30s"
+auto_enter = true
+max_enters = 2
+nudge_parent = true
+notify = ""
+# notify = "mac-notify send --blocker \"tpp {session}: {reason}\""
+cooldown = "10m"
+
+# [[watch.rules]]
+# pattern = "/Sign in to continue/"  # plain text = substring; /.../ = regex
+# action = "notify"                  # enter | notify | ignore
 ```
 
 ## How it works
@@ -196,6 +237,8 @@ instead of whatever pane is currently active. `remain-on-exit` keeps a finished 
 screen so `cat`/`tail` still work; `exit` / `rm --record` snapshot it under
 `~/.tpp/data/exited/<socket>/` before killing, and `reap` records by default. `--on-exit` hooks are stored under
 `~/.tpp/data/hooks/<socket>/` and guarded with an atomic once-marker.
+Per-session watcher pidfiles and `watch.log` use `~/.tpp/data/watch/<socket>/`; the detached
+watcher is the current `tpp` executable running `watch run` on the same selected socket.
 
 ## Development
 

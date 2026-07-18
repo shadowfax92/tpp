@@ -53,6 +53,9 @@ pub enum Cmd {
     #[command(visible_alias = "n")]
     New(NewArgs),
 
+    /// Inspect or control per-session stuck-screen watchers.
+    Watch(WatchArgs),
+
     /// List all tpp sessions.
     #[command(visible_aliases = ["l", "list"])]
     Ls(LsArgs),
@@ -159,6 +162,9 @@ pub struct RunArgs {
     /// With --wait: also record the output as an exited session.
     #[arg(long)]
     pub record: bool,
+    /// Watch this command for blocked interactive prompts.
+    #[arg(long)]
+    pub watch: bool,
     /// The command to run (everything after `--`).
     #[arg(
         trailing_var_arg = true,
@@ -185,6 +191,12 @@ pub struct NewArgs {
     /// Shell command to run once when this session's root command exits.
     #[arg(long, value_name = "CMD")]
     pub on_exit: Option<String>,
+    /// Disable the per-session stuck-screen watcher.
+    #[arg(long)]
+    pub no_watch: bool,
+    /// Pane to nudge if the session stalls (default: the calling tmux pane).
+    #[arg(long, value_name = "TMUX_TARGET")]
+    pub parent_pane: Option<String>,
     /// Command to run (defaults to your shell).
     #[arg(
         trailing_var_arg = true,
@@ -192,6 +204,29 @@ pub struct NewArgs {
         value_name = "CMD"
     )]
     pub command: Vec<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct WatchArgs {
+    #[command(subcommand)]
+    pub action: WatchCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum WatchCommand {
+    /// Run a session watcher in the foreground.
+    Run(WatchTargetArgs),
+    /// List active session watchers.
+    Ls,
+    /// Stop a session watcher.
+    Stop(WatchTargetArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct WatchTargetArgs {
+    /// Session to watch or stop watching.
+    #[arg(short = 't', long, value_name = "SESSION")]
+    pub target: String,
 }
 
 #[derive(Args, Debug, Default)]

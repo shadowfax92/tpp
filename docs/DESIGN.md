@@ -10,7 +10,7 @@ It replaces `rmux` in the `sf-auto-mux` dispatch flow: spin up a **detached** se
 in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
 **capture** its output, and tear it down — for both humans and agents.
 
-## The four core capabilities
+## Core capabilities
 
 1. **List sessions globally.** Every `tpp`-created session is tagged (via tmux
    session user-options), and `tpp ls` shows every tagged session on the selected tmux
@@ -27,6 +27,9 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
    `paste` verifies submission by default.
 5. **Address panes directly.** `tpp bind` names an arbitrary tmux pane using pane
    user-options. `send`, `paste`, `cat`, and `wait` can target `pane:<name>`.
+6. **Recover blocked agent starts.** Command-bearing `new` sessions launch one detached
+   watcher that clears known trust/continue prompts and escalates unknown stable screens.
+   `run` opts in with `--watch`.
 
 ## Model
 
@@ -56,6 +59,20 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
   writes the opaque command to private tpp state, installs a root-pane `pane-died` hook plus a
   guarded global `session-closed` hook, and uses an atomic marker directory to make all paths
   exactly-once. Hooked sessions force `remain-on-exit` on even if the default config disables it.
+- **Watchers** are session-local detached `tpp watch run` processes. Each resolves
+  `@tpp_origin_pane` once, captures only that raw `%id`, ANSI-strips and hashes its last 30 lines,
+  and treats a hash change as activity. User rules precede built-ins; known blockers use the short
+  prompt threshold, ignored idle screens remain silent, and unmatched screens use the longer stall
+  threshold. Auto-Enter is pattern-gated and bounded; escalation is once per stable episode plus a
+  session cooldown.
+- **Parent escalation** uses `@tpp_parent_pane`, normally resolved from `$TMUX_PANE` at `new`
+  time and overridable with `--parent-pane`. The watcher uses the internal bracketed-paste path
+  against that raw pane id, neutralizes shell-active punctuation in dynamic fields, then sends
+  Enter. An optional shell notifier gets captured tail text only through `TPP_TAIL`, not
+  command-string substitution.
+- **Watcher state** is socket-scoped under `~/.tpp/data/watch/<socket>/`: one stale-checked
+  pidfile per session plus an append-only `watch.log`. `@tpp_watch=1` records that a watcher is
+  armed; the watcher exits when the session or origin pane is gone/dead and does not own teardown.
 - **Exited records.** `tpp exit` / `tpp rm --record` capture the final scrollback to
   `~/.tpp/data/exited/<socket>/` before killing, so `cat` can replay a dead session
   without crossing tmux sockets and `clear` purges the records. Auto-pruned after
@@ -64,7 +81,7 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
 ## Command surface
 
 Ergonomic (primary): `run`(r) · `new`(n) · `ls`(l,list) · `attach`(a) · `send`(s) ·
-`paste` · `bind` · `targets` · `unbind` · `cat`(cap,capture) · `tail`(follow) · `wait` ·
+`paste` · `bind` · `targets` · `unbind` · `cat`(cap,capture) · `tail`(follow) · `wait` · `watch` ·
 `rm`(kill,remove) · `reap` · `exit`(e,quit) · `clear`(clr) · `has` · `rename` · `config` · `init` ·
 `doctor` · `completions`.
 
@@ -89,13 +106,13 @@ flags the scripts use onto the same internals (or forward straight to `tmux`).
 
 `~/.config/tpp/config.toml` (override dir with `$TPP_CONFIG_DIR`). State under
 `~/.tpp/data/` (`$TPP_STATE_DIR`). `tpp init` writes a starter config; `tpp doctor`
-checks tmux + prints resolved paths. `[reap] ttl` accepts `s`, `m`, `h`, and `d` units; `0`
-disables idle live-session reaping while still allowing dead root panes to be cleaned. See
-`tpp config path|show|edit`.
+checks tmux + prints resolved paths. `[reap] ttl` and `[watch]` durations accept `s`, `m`, `h`,
+and `d` units. Watch rules use substring matching unless wrapped in `/.../` for regex; actions are
+`enter`, `notify`, and `ignore`. See `tpp config path|show|edit`.
 
 ## Non-goals (v1)
 
-No standalone PTY/daemon (that's `rmux`'s job). No pane-target state files; deleted panes cannot
+No standalone PTY or global daemon (the watchdog is intentionally per-session). No pane-target state files; deleted panes cannot
 be reported after tmux forgets them. No lease/pool ownership; sfmux owns that state. No window/pane
 layout management (that's `layouts`/`tmx`). `tpp` stays focused on session lifecycle + I/O for
 agents and humans.
