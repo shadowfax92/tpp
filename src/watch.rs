@@ -23,11 +23,11 @@ use crate::session;
 use crate::tmux::tgt;
 
 const BUILTIN_RULES: &[(&str, WatchAction)] = &[
+    ("? for shortcuts", WatchAction::Ignore),
     ("Press enter to continue", WatchAction::Enter),
     ("Enter to confirm", WatchAction::Enter),
     ("Do you trust", WatchAction::Enter),
     ("trust this folder", WatchAction::Enter),
-    ("? for shortcuts", WatchAction::Ignore),
 ];
 
 #[derive(Debug)]
@@ -236,6 +236,7 @@ pub fn validate_config(cfg: &WatchCfg) -> Result<()> {
 struct WatchProcess {
     session: String,
     pid: u32,
+    process_start: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -248,6 +249,7 @@ struct WatchListRow {
 struct PidGuard {
     path: PathBuf,
     pid: u32,
+    process_start: String,
 }
 
 impl PidGuard {
@@ -258,19 +260,26 @@ impl PidGuard {
             match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(mut file) => {
                     let pid = std::process::id();
+                    let process_start =
+                        process_start(pid).context("reading watcher process start time")?;
                     let record = WatchProcess {
                         session: session_name.to_string(),
                         pid,
+                        process_start: process_start.clone(),
                     };
                     if let Err(err) = serde_json::to_writer(&mut file, &record) {
                         let _ = std::fs::remove_file(&path);
                         return Err(err).context("writing watcher pidfile");
                     }
                     writeln!(file)?;
-                    return Ok(Some(Self { path, pid }));
+                    return Ok(Some(Self {
+                        path,
+                        pid,
+                        process_start,
+                    }));
                 }
                 Err(err) if err.kind() == ErrorKind::AlreadyExists => {
-                    if read_process(&path).is_some_and(|process| process_alive(process.pid)) {
+                    if read_process(&path).is_some_and(|process| process_matches(&process)) {
                         return Ok(None);
                     }
                     match std::fs::remove_file(&path) {
@@ -289,7 +298,9 @@ impl PidGuard {
 
 impl Drop for PidGuard {
     fn drop(&mut self) {
-        if read_process(&self.path).is_some_and(|process| process.pid == self.pid) {
+        if read_process(&self.path).is_some_and(|process| {
+            process.pid == self.pid && process.process_start == self.process_start
+        }) {
             let _ = std::fs::remove_file(&self.path);
         }
     }
@@ -313,15 +324,24 @@ fn read_process(path: &Path) -> Option<WatchProcess> {
     serde_json::from_str(&text).ok()
 }
 
-fn process_alive(pid: u32) -> bool {
-    pid > 0
-        && Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
+fn process_start(pid: u32) -> Option<String> {
+    if pid == 0 {
+        return None;
+    }
+    let output = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "lstart="])
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let started = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!started.is_empty()).then_some(started)
+}
+
+fn process_matches(process: &WatchProcess) -> bool {
+    process_start(process.pid).is_some_and(|started| started == process.process_start)
 }
 
 fn append_log(root: &Path, session_name: &str, message: &str) {
@@ -423,12 +443,7 @@ fn run_notify(
     if ctx.cfg.watch.notify.trim().is_empty() {
         return Ok(());
     }
-    let command = ctx
-        .cfg
-        .watch
-        .notify
-        .replace("{session}", session_name)
-        .replace("{reason}", reason);
+    let command = notify_command(&ctx.cfg.watch.notify);
     let status = Command::new("sh")
         .arg("-c")
         .arg(command)
@@ -447,6 +462,12 @@ fn run_notify(
         bail!("watch notify command exited {}", status.code().unwrap_or(1));
     }
     Ok(())
+}
+
+fn notify_command(template: &str) -> String {
+    template
+        .replace("{session}", "${TPP_SESSION}")
+        .replace("{reason}", "${TPP_REASON}")
 }
 
 fn escalate(ctx: &Ctx, root: &Path, session_name: &str, reason: &str, screen: &str) {
@@ -556,7 +577,7 @@ fn active_watchers(root: &Path) -> Result<Vec<WatchProcess>> {
             continue;
         }
         match read_process(&entry.path()) {
-            Some(process) if process_alive(process.pid) => active.push(process),
+            Some(process) if process_matches(&process) => active.push(process),
             _ => {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -608,7 +629,7 @@ pub fn stop_watcher(ctx: &Ctx, args: WatchTargetArgs) -> Result<()> {
             format!("No watcher for session {session_name}"),
         );
     };
-    if process_alive(process.pid) {
+    if process_matches(&process) {
         let status = Command::new("kill")
             .args(["-TERM", &process.pid.to_string()])
             .status()
@@ -617,7 +638,7 @@ pub fn stop_watcher(ctx: &Ctx, args: WatchTargetArgs) -> Result<()> {
             bail!("could not stop watcher pid {}", process.pid);
         }
         for _ in 0..40 {
-            if !process_alive(process.pid) {
+            if !process_matches(&process) {
                 break;
             }
             std::thread::sleep(Duration::from_millis(25));
@@ -631,7 +652,10 @@ pub fn stop_watcher(ctx: &Ctx, args: WatchTargetArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RuleSet, WatchDecision, WatchState};
+    use super::{
+        notify_command, process_matches, process_start, RuleSet, WatchDecision, WatchProcess,
+        WatchState,
+    };
     use crate::config::{WatchAction, WatchCfg, WatchRuleCfg};
     use std::time::Duration;
 
@@ -692,6 +716,38 @@ mod tests {
             rules.matched("composer  ? for shortcuts").unwrap().action,
             WatchAction::Ignore
         );
+        assert_eq!(
+            rules
+                .matched("Press enter to continue\n? for shortcuts")
+                .unwrap()
+                .action,
+            WatchAction::Ignore
+        );
+    }
+
+    #[test]
+    fn notify_placeholders_expand_through_quoted_environment_references() {
+        assert_eq!(
+            notify_command("notify --title {session} --message \"{reason}\""),
+            "notify --title ${TPP_SESSION} --message \"${TPP_REASON}\""
+        );
+    }
+
+    #[test]
+    fn watcher_identity_requires_pid_and_process_start() {
+        let pid = std::process::id();
+        let started = process_start(pid).unwrap();
+        let process = WatchProcess {
+            session: "tpp/test".to_string(),
+            pid,
+            process_start: started.clone(),
+        };
+
+        assert!(process_matches(&process));
+        assert!(!process_matches(&WatchProcess {
+            process_start: format!("{started}-different"),
+            ..process
+        }));
     }
 
     #[test]
