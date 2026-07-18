@@ -65,8 +65,10 @@ pub(crate) fn session_pane_target(tmux: &Tmux, name: &str) -> Result<String, Ori
     let Some(pane) = session::origin_pane(tmux, name) else {
         return Ok(tgt(name));
     };
-    if tmux.ok(["display-message", "-p", "-t", &pane, "#{pane_id}"]) || !session::exists(tmux, name)
-    {
+    let pane_resolves = tmux
+        .run(["display-message", "-p", "-t", &pane, "#{pane_id}"])
+        .is_ok_and(|resolved| resolved.trim() == pane);
+    if pane_resolves || !session::exists(tmux, name) {
         return Ok(pane);
     }
     Err(OriginPaneGone { session: tgt(name) })

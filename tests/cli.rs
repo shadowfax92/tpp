@@ -173,6 +173,17 @@ fn assert_exit_code(out: &Output, code: i32) {
     );
 }
 
+fn assert_origin_gone(out: &Output, session: &str) {
+    assert_exit_code(out, 3);
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains(&format!(
+            "origin pane gone for {session} (startup window closed?)"
+        )),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 fn tmux_available() -> bool {
     Command::new("tmux")
         .arg("-V")
@@ -1813,6 +1824,190 @@ fn compat_io_forwards_missing_session_targets_to_tmux() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+#[test]
+fn io_commands_fail_cleanly_when_origin_pane_is_gone() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let logical_name = "codex/origin-gone";
+    let session_name = "tpp/codex/origin-gone";
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "new",
+            "-s",
+            logical_name,
+            "--",
+            "sh",
+            "-c",
+            "printf origin-ready; sleep 30",
+        ],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "wait",
+            "-t",
+            logical_name,
+            "--text",
+            "origin-ready",
+            "--timeout",
+            "5000",
+        ],
+    ));
+    let origin = run_tmux(
+        &server,
+        &["show-option", "-qv", "-t", session_name, "@tpp_origin_pane"],
+    );
+    assert_success(&origin);
+    let origin = String::from_utf8_lossy(&origin.stdout).trim().to_string();
+    assert_success(&run_tmux(
+        &server,
+        &[
+            "new-window",
+            "-t",
+            session_name,
+            "printf user-window; sleep 30",
+        ],
+    ));
+    assert_success(&run_tmux(&server, &["kill-pane", "-t", &origin]));
+    assert_success(&run_tmux(&server, &["has-session", "-t", session_name]));
+
+    for args in [
+        vec!["cat", logical_name],
+        vec!["send", "-t", logical_name, "payload"],
+        vec![
+            "paste",
+            "-t",
+            logical_name,
+            "--no-enter",
+            "--no-verify",
+            "payload",
+        ],
+        vec![
+            "wait",
+            "-t",
+            logical_name,
+            "--text",
+            "never",
+            "--timeout",
+            "200",
+        ],
+        vec!["tail", logical_name],
+        vec!["capture-pane", "-t", logical_name, "-p"],
+        vec!["send-keys", "-t", logical_name, "payload"],
+        vec!["paste-buffer", "-t", logical_name],
+    ] {
+        let out = run_tpp(&server, tmp.path(), &args);
+        assert_origin_gone(&out, session_name);
+    }
+}
+
+#[test]
+fn cat_replays_record_when_live_session_origin_is_gone() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let logical_name = "codex/origin-record";
+    let session_name = "tpp/codex/origin-record";
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "run",
+            "-s",
+            logical_name,
+            "--wait",
+            "--record",
+            "--",
+            "sh",
+            "-c",
+            "printf recorded-origin-output",
+        ],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "new",
+            "-s",
+            logical_name,
+            "--",
+            "sh",
+            "-c",
+            "printf current-origin; sleep 30",
+        ],
+    ));
+    let origin = run_tmux(
+        &server,
+        &["show-option", "-qv", "-t", session_name, "@tpp_origin_pane"],
+    );
+    assert_success(&origin);
+    let origin = String::from_utf8_lossy(&origin.stdout).trim().to_string();
+    assert_success(&run_tmux(
+        &server,
+        &["new-window", "-t", session_name, "sleep 30"],
+    ));
+    assert_success(&run_tmux(&server, &["kill-pane", "-t", &origin]));
+
+    let cat = run_tpp(&server, tmp.path(), &["cat", logical_name]);
+    assert_success(&cat);
+    let stdout = String::from_utf8_lossy(&cat.stdout);
+    assert!(stdout.contains("recorded-origin-output"), "{stdout}");
+    assert!(!stdout.contains("current-origin"), "{stdout}");
+}
+
+#[test]
+fn unstamped_legacy_session_keeps_bare_session_fallback() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let session_name = "tpp/codex/legacy-origin";
+    assert_success(&run_tmux(
+        &server,
+        &[
+            "new-session",
+            "-d",
+            "-s",
+            session_name,
+            "printf legacy-origin; sleep 30",
+        ],
+    ));
+    assert_success(&run_tmux(
+        &server,
+        &[
+            "new-window",
+            "-t",
+            session_name,
+            "printf legacy-active; sleep 30",
+        ],
+    ));
+    let raw = wait_for_raw_capture(&server, session_name, "legacy-active");
+    assert!(raw.contains("legacy-active"));
+
+    let cat = run_tpp(&server, tmp.path(), &["cat", "codex/legacy-origin"]);
+    assert_success(&cat);
+    assert!(String::from_utf8_lossy(&cat.stdout).contains("legacy-active"));
+    let compat = run_tpp(
+        &server,
+        tmp.path(),
+        &["capture-pane", "-t", "codex/legacy-origin", "-p"],
+    );
+    assert_success(&compat);
+    assert!(String::from_utf8_lossy(&compat.stdout).contains("legacy-active"));
 }
 
 #[test]
