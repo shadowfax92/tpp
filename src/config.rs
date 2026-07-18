@@ -32,6 +32,7 @@ pub struct Config {
     pub exit: ExitCfg,
     pub wait: WaitCfg,
     pub reap: ReapCfg,
+    pub watch: WatchCfg,
     /// Legacy no-op accepted so older config files keep loading after scopes were removed.
     #[serde(rename = "scope", default, skip_serializing)]
     pub legacy_scope: Option<toml::Value>,
@@ -112,6 +113,36 @@ pub struct ReapCfg {
     pub record: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WatchCfg {
+    pub enabled: bool,
+    pub poll: DurationCfg,
+    pub prompt_stable: DurationCfg,
+    pub stuck_after: DurationCfg,
+    pub auto_enter: bool,
+    pub max_enters: u32,
+    pub nudge_parent: bool,
+    pub notify: String,
+    pub cooldown: DurationCfg,
+    pub rules: Vec<WatchRuleCfg>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WatchRuleCfg {
+    pub pattern: String,
+    pub action: WatchAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WatchAction {
+    Enter,
+    Notify,
+    Ignore,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -126,6 +157,7 @@ impl Default for Config {
             exit: ExitCfg::default(),
             wait: WaitCfg::default(),
             reap: ReapCfg::default(),
+            watch: WatchCfg::default(),
             legacy_scope: None,
         }
     }
@@ -186,6 +218,23 @@ impl Default for ReapCfg {
         Self {
             ttl: DurationCfg::from_secs(DEFAULT_REAP_TTL_SECS),
             record: true,
+        }
+    }
+}
+
+impl Default for WatchCfg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            poll: DurationCfg::from_secs(3),
+            prompt_stable: DurationCfg::from_secs(5),
+            stuck_after: DurationCfg::from_secs(30),
+            auto_enter: true,
+            max_enters: 2,
+            nudge_parent: true,
+            notify: String::new(),
+            cooldown: DurationCfg::from_secs(10 * 60),
+            rules: Vec::new(),
         }
     }
 }
@@ -354,11 +403,28 @@ timeout_ms = 30000       # default upper bound for `wait`
 [reap]
 ttl = "6h"               # reap detached live sessions idle longer than this; "0" disables that
 record = true            # save scrollback before killing a reaped session
+
+[watch]
+enabled = true
+poll = "3s"
+prompt_stable = "5s"
+stuck_after = "30s"
+auto_enter = true
+max_enters = 2
+nudge_parent = true
+notify = ""
+# notify = "mac-notify send --blocker \"tpp {session}: {reason}\""
+cooldown = "10m"
+
+# User rules run before built-ins; plain patterns are substrings and /.../ patterns are regexes.
+# [[watch.rules]]
+# pattern = "Sign in to continue"
+# action = "notify"
 "#;
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_duration, Config, DurationCfg, STARTER_CONFIG};
+    use super::{parse_duration, Config, DurationCfg, WatchAction, STARTER_CONFIG};
 
     #[test]
     fn default_session_prefix_is_tpp_path() {
@@ -442,5 +508,81 @@ mod tests {
         assert!(STARTER_CONFIG.contains("[reap]"));
         assert!(STARTER_CONFIG.contains("ttl = \"6h\""));
         assert!(STARTER_CONFIG.contains("record = true"));
+    }
+
+    #[test]
+    fn watch_defaults_match_the_session_contract() {
+        let watch = Config::default().watch;
+
+        assert!(watch.enabled);
+        assert_eq!(watch.poll.as_secs(), 3);
+        assert_eq!(watch.prompt_stable.as_secs(), 5);
+        assert_eq!(watch.stuck_after.as_secs(), 30);
+        assert!(watch.auto_enter);
+        assert_eq!(watch.max_enters, 2);
+        assert!(watch.nudge_parent);
+        assert!(watch.notify.is_empty());
+        assert_eq!(watch.cooldown.as_secs(), 10 * 60);
+        assert!(watch.rules.is_empty());
+    }
+
+    #[test]
+    fn parse_config_watch_section_and_rules() {
+        let cfg = Config::parse(
+            r#"
+[watch]
+enabled = false
+poll = "1s"
+prompt_stable = "2s"
+stuck_after = "45s"
+auto_enter = false
+max_enters = 4
+nudge_parent = false
+notify = "notify {session} {reason}"
+cooldown = "1m"
+
+[[watch.rules]]
+pattern = "/OAuth.*/"
+action = "notify"
+
+[[watch.rules]]
+pattern = "safe idle"
+action = "ignore"
+"#,
+        )
+        .unwrap();
+
+        assert!(!cfg.watch.enabled);
+        assert_eq!(cfg.watch.poll.as_secs(), 1);
+        assert_eq!(cfg.watch.prompt_stable.as_secs(), 2);
+        assert_eq!(cfg.watch.stuck_after.as_secs(), 45);
+        assert!(!cfg.watch.auto_enter);
+        assert_eq!(cfg.watch.max_enters, 4);
+        assert!(!cfg.watch.nudge_parent);
+        assert_eq!(cfg.watch.notify, "notify {session} {reason}");
+        assert_eq!(cfg.watch.cooldown.as_secs(), 60);
+        assert_eq!(cfg.watch.rules.len(), 2);
+        assert_eq!(cfg.watch.rules[0].action, WatchAction::Notify);
+        assert_eq!(cfg.watch.rules[1].action, WatchAction::Ignore);
+    }
+
+    #[test]
+    fn starter_config_documents_watch_defaults() {
+        for expected in [
+            "[watch]",
+            "enabled = true",
+            "poll = \"3s\"",
+            "prompt_stable = \"5s\"",
+            "stuck_after = \"30s\"",
+            "auto_enter = true",
+            "max_enters = 2",
+            "nudge_parent = true",
+            "notify = \"\"",
+            "cooldown = \"10m\"",
+            "[[watch.rules]]",
+            "mac-notify send --blocker",
+        ] {
+            assert!(STARTER_CONFIG.contains(expected), "missing {expected}");
+        }
     }
 }

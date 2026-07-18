@@ -9,6 +9,7 @@ pub mod paths;
 pub mod session;
 pub mod store;
 pub mod tmux;
+pub mod watch;
 
 use anyhow::Result;
 use clap::Parser;
