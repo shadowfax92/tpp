@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::cli::{
@@ -17,6 +17,7 @@ use crate::output::{paint, print_json, Style};
 use crate::session::{self, now_epoch, NewOpts};
 use crate::store::Store;
 use crate::tmux::exact;
+use crate::watch;
 
 fn cwd_string() -> Option<String> {
     std::env::current_dir()
@@ -73,6 +74,34 @@ fn auto_name_for_command(ctx: &Ctx, command: &[String]) -> String {
     unique_name(ctx, &slug(base))
 }
 
+fn caller_parent_pane(ctx: &Ctx, explicit: Option<&str>) -> Result<Option<String>> {
+    let source = match explicit {
+        Some(target) => Some(target.trim().to_string()),
+        None if std::env::var_os("TMUX").is_some() => {
+            let pane = std::env::var("TMUX_PANE")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| {
+                    die(
+                        code::USAGE,
+                        "inside tmux but TMUX_PANE is empty; use --parent-pane",
+                    )
+                });
+            Some(pane)
+        }
+        None => None,
+    };
+    source
+        .map(|target| {
+            ctx.tmux
+                .run(["display-message", "-p", "-t", &target, "#{pane_id}"])
+                .map(|pane| pane.trim().to_string())
+                .with_context(|| format!("resolving parent pane {target}"))
+        })
+        .transpose()
+}
+
 pub fn run(ctx: &Ctx, args: RunArgs) -> Result<()> {
     let dir = args.dir.clone().or_else(cwd_string);
     let name = match &args.name {
@@ -86,6 +115,15 @@ pub fn run(ctx: &Ctx, args: RunArgs) -> Result<()> {
         None => auto_name_for_command(ctx, &args.command),
     };
 
+    if args.watch {
+        watch::validate_config(&ctx.cfg.watch)?;
+    }
+    let parent_pane = if args.watch {
+        caller_parent_pane(ctx, None)?
+    } else {
+        None
+    };
+
     session::create(
         &ctx.tmux,
         &ctx.cfg,
@@ -96,8 +134,17 @@ pub fn run(ctx: &Ctx, args: RunArgs) -> Result<()> {
             width: None,
             height: None,
             on_exit: None,
+            parent_pane,
+            watch: args.watch,
         },
     )?;
+
+    if args.watch {
+        if let Err(err) = watch::spawn_detached(ctx, &name) {
+            session::set_watch_armed(&ctx.tmux, &name, false);
+            return Err(err);
+        }
+    }
 
     if args.wait {
         let status = run_wait(ctx, &name)?;
@@ -140,6 +187,11 @@ pub fn new(ctx: &Ctx, args: NewArgs) -> Result<()> {
     }
 
     let dir = args.dir.clone().or_else(cwd_string);
+    let watch_enabled = !args.command.is_empty() && !args.no_watch && ctx.cfg.watch.enabled;
+    if watch_enabled {
+        watch::validate_config(&ctx.cfg.watch)?;
+    }
+    let parent_pane = caller_parent_pane(ctx, args.parent_pane.as_deref())?;
     let store_socket = ctx.tmux.store_socket();
     let on_exit = args
         .on_exit
@@ -159,8 +211,17 @@ pub fn new(ctx: &Ctx, args: NewArgs) -> Result<()> {
             width: None,
             height: None,
             on_exit,
+            parent_pane,
+            watch: watch_enabled,
         },
     )?;
+
+    if watch_enabled {
+        if let Err(err) = watch::spawn_detached(ctx, &name) {
+            session::set_watch_armed(&ctx.tmux, &name, false);
+            return Err(err);
+        }
+    }
 
     println!("{name}");
     if !ctx.quiet {

@@ -1,11 +1,26 @@
 //! Per-session stable-screen detection and watchdog process lifecycle.
 
-use std::time::Duration;
+use std::collections::hash_map::DefaultHasher;
+use std::fs::OpenOptions;
+use std::hash::{Hash, Hasher};
+use std::io::{ErrorKind, Write};
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 
+use crate::cli::WatchTargetArgs;
+use crate::commands::io::{bracketed_paste, strip_ansi};
+use crate::commands::{capture, code, die, last_lines, trim_trailing_blank, Ctx};
 use crate::config::{WatchAction, WatchCfg, WatchRuleCfg};
+use crate::output::print_json;
+use crate::paths::{create_private_dir_all, encode_state_component};
+use crate::session;
+use crate::tmux::tgt;
 
 const BUILTIN_RULES: &[(&str, WatchAction)] = &[
     ("Press enter to continue", WatchAction::Enter),
@@ -211,7 +226,407 @@ impl WatchState {
 
 /// Validate user rule syntax before a session is labeled as watched.
 pub fn validate_config(cfg: &WatchCfg) -> Result<()> {
+    if cfg.poll.as_secs() == 0 {
+        bail!("watch.poll must be greater than 0");
+    }
     WatchEngine::new(cfg).map(|_| ())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WatchProcess {
+    session: String,
+    pid: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct WatchListRow {
+    session: String,
+    pid: u32,
+    status: &'static str,
+}
+
+struct PidGuard {
+    path: PathBuf,
+    pid: u32,
+}
+
+impl PidGuard {
+    fn acquire(root: &Path, session_name: &str) -> Result<Option<Self>> {
+        create_private_dir_all(root)?;
+        let path = pidfile_path(root, session_name);
+        loop {
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut file) => {
+                    let pid = std::process::id();
+                    let record = WatchProcess {
+                        session: session_name.to_string(),
+                        pid,
+                    };
+                    if let Err(err) = serde_json::to_writer(&mut file, &record) {
+                        let _ = std::fs::remove_file(&path);
+                        return Err(err).context("writing watcher pidfile");
+                    }
+                    writeln!(file)?;
+                    return Ok(Some(Self { path, pid }));
+                }
+                Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+                    if read_process(&path).is_some_and(|process| process_alive(process.pid)) {
+                        return Ok(None);
+                    }
+                    match std::fs::remove_file(&path) {
+                        Ok(()) => {}
+                        Err(remove_err) if remove_err.kind() == ErrorKind::NotFound => {}
+                        Err(remove_err) => {
+                            return Err(remove_err).context("removing stale pidfile")
+                        }
+                    }
+                }
+                Err(err) => return Err(err).context("creating watcher pidfile"),
+            }
+        }
+    }
+}
+
+impl Drop for PidGuard {
+    fn drop(&mut self) {
+        if read_process(&self.path).is_some_and(|process| process.pid == self.pid) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn watch_root(ctx: &Ctx) -> PathBuf {
+    let socket = ctx.tmux.store_socket();
+    ctx.paths.socket_state_dir("watch", socket.as_deref())
+}
+
+fn watch_log(root: &Path) -> PathBuf {
+    root.join("watch.log")
+}
+
+fn pidfile_path(root: &Path, session_name: &str) -> PathBuf {
+    root.join(format!("{}.pid", encode_state_component(session_name)))
+}
+
+fn read_process(path: &Path) -> Option<WatchProcess> {
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn process_alive(pid: u32) -> bool {
+    pid > 0
+        && Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+}
+
+fn append_log(root: &Path, session_name: &str, message: &str) {
+    if create_private_dir_all(root).is_err() {
+        return;
+    }
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(watch_log(root))
+    {
+        let _ = writeln!(
+            file,
+            "{} [{}] {message}",
+            session::now_epoch(),
+            session_name
+        );
+    }
+}
+
+/// Spawn the current tpp executable as a detached watcher for one session.
+pub fn spawn_detached(ctx: &Ctx, session_name: &str) -> Result<()> {
+    validate_config(&ctx.cfg.watch)?;
+    let root = watch_root(ctx);
+    create_private_dir_all(&root)?;
+    let stdout = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(watch_log(&root))?;
+    let stderr = stdout.try_clone()?;
+    let mut command =
+        Command::new(std::env::current_exe().context("resolving current tpp binary")?);
+    if let Some(socket) = ctx.tmux.socket() {
+        command.args(["-L", socket]);
+    }
+    command
+        .arg("--config")
+        .arg(&ctx.config_path)
+        .args(["watch", "run", "-t", session_name])
+        .env("TPP_CONFIG_DIR", &ctx.paths.config_dir)
+        .env("TPP_STATE_DIR", &ctx.paths.state_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr));
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let child = command
+        .spawn()
+        .context("spawning detached session watcher")?;
+    append_log(
+        &root,
+        session_name,
+        &format!("spawned watcher pid {}", child.id()),
+    );
+    Ok(())
+}
+
+fn origin_is_alive(ctx: &Ctx, origin: &str) -> bool {
+    ctx.tmux
+        .run(["display-message", "-p", "-t", origin, "#{pane_dead}"])
+        .is_ok_and(|dead| dead.trim() == "0")
+}
+
+fn screen_hash(screen: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    screen.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn sanitized_line(text: &str, limit: usize) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace('"', "'")
+        .chars()
+        .take(limit)
+        .collect()
+}
+
+fn send_parent_nudge(ctx: &Ctx, parent: &str, message: &str) -> Result<()> {
+    bracketed_paste(&ctx.tmux, parent, message)?;
+    ctx.tmux.run(["send-keys", "-t", &tgt(parent), "Enter"])?;
+    Ok(())
+}
+
+fn run_notify(
+    ctx: &Ctx,
+    session_name: &str,
+    parent: Option<&str>,
+    reason: &str,
+    tail: &str,
+) -> Result<()> {
+    if ctx.cfg.watch.notify.trim().is_empty() {
+        return Ok(());
+    }
+    let command = ctx
+        .cfg
+        .watch
+        .notify
+        .replace("{session}", session_name)
+        .replace("{reason}", reason);
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .env("TPP_SESSION", session_name)
+        .env("TPP_SESSION_NAME", session_name)
+        .env("TPP_REASON", reason)
+        .env("TPP_TAIL", tail)
+        .env(
+            "TPP_DIR",
+            session::session_dir(&ctx.tmux, session_name).unwrap_or_default(),
+        )
+        .env("TPP_PARENT_PANE", parent.unwrap_or(""))
+        .status()
+        .context("running watch notify command")?;
+    if !status.success() {
+        bail!("watch notify command exited {}", status.code().unwrap_or(1));
+    }
+    Ok(())
+}
+
+fn escalate(ctx: &Ctx, root: &Path, session_name: &str, reason: &str, screen: &str) {
+    let parent = session::parent_pane(&ctx.tmux, session_name);
+    let tail = last_lines(screen, 5);
+    let reason_line = sanitized_line(reason, 160);
+    let tail_line = sanitized_line(&tail, 120);
+    append_log(root, session_name, &format!("escalated: {reason_line}"));
+
+    if ctx.cfg.watch.nudge_parent {
+        if let Some(parent) = parent.as_deref() {
+            let message = format!(
+                "[tpp:{session_name}] ⚠️ stuck: {reason_line} — last: \"{tail_line}\" — check: tpp attach {session_name}"
+            );
+            if let Err(err) = send_parent_nudge(ctx, parent, &message) {
+                append_log(root, session_name, &format!("parent nudge failed: {err}"));
+            }
+        }
+    }
+    if let Err(err) = run_notify(ctx, session_name, parent.as_deref(), &reason_line, &tail) {
+        append_log(root, session_name, &format!("notify failed: {err}"));
+    }
+}
+
+fn watch_loop(ctx: &Ctx, root: &Path, session_name: &str, origin: &str) -> Result<()> {
+    let mut engine = WatchEngine::new(&ctx.cfg.watch)?;
+    let started = Instant::now();
+    let poll = Duration::from_secs(ctx.cfg.watch.poll.as_secs());
+    loop {
+        if !session::exists(&ctx.tmux, session_name) || !origin_is_alive(ctx, origin) {
+            return Ok(());
+        }
+        let captured = match capture(&ctx.tmux, origin, Some(30), true, false) {
+            Ok(captured) => captured,
+            Err(_) => return Ok(()),
+        };
+        let stripped = strip_ansi(&captured);
+        let screen = last_lines(&trim_trailing_blank(&stripped), 30);
+        match engine.observe(started.elapsed(), screen_hash(&screen), &screen) {
+            Some(WatchDecision::Enter { pattern }) => {
+                if ctx
+                    .tmux
+                    .run(["send-keys", "-t", &tgt(origin), "Enter"])
+                    .is_err()
+                {
+                    return Ok(());
+                }
+                append_log(
+                    root,
+                    session_name,
+                    &format!("automatic Enter for {pattern:?}"),
+                );
+            }
+            Some(WatchDecision::Escalate { reason }) => {
+                escalate(ctx, root, session_name, &reason, &screen);
+            }
+            None => {}
+        }
+        std::thread::sleep(poll);
+    }
+}
+
+/// Run one watcher loop in the foreground until its origin pane disappears or dies.
+pub fn run_foreground(ctx: &Ctx, args: WatchTargetArgs) -> Result<()> {
+    validate_config(&ctx.cfg.watch)?;
+    let session_name = session::resolve_existing_name(&ctx.tmux, &ctx.cfg, &args.target);
+    if !session::exists(&ctx.tmux, &session_name) {
+        return Ok(());
+    }
+    let Some(origin) = session::origin_pane(&ctx.tmux, &session_name) else {
+        session::set_watch_armed(&ctx.tmux, &session_name, false);
+        return Ok(());
+    };
+    if !origin_is_alive(ctx, &origin) {
+        session::set_watch_armed(&ctx.tmux, &session_name, false);
+        return Ok(());
+    }
+    let root = watch_root(ctx);
+    let guard = match PidGuard::acquire(&root, &session_name) {
+        Ok(guard) => guard,
+        Err(err) => {
+            session::set_watch_armed(&ctx.tmux, &session_name, false);
+            return Err(err);
+        }
+    };
+    let Some(_guard) = guard else {
+        return Ok(());
+    };
+    session::set_watch_armed(&ctx.tmux, &session_name, true);
+    append_log(&root, &session_name, "watcher started");
+    let result = watch_loop(ctx, &root, &session_name, &origin);
+    session::set_watch_armed(&ctx.tmux, &session_name, false);
+    append_log(&root, &session_name, "watcher stopped");
+    result
+}
+
+fn active_watchers(root: &Path) -> Result<Vec<WatchProcess>> {
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err).context("reading watcher state"),
+    };
+    let mut active = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        if entry.path().extension().and_then(|ext| ext.to_str()) != Some("pid") {
+            continue;
+        }
+        match read_process(&entry.path()) {
+            Some(process) if process_alive(process.pid) => active.push(process),
+            _ => {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    active.sort_by(|left, right| left.session.cmp(&right.session));
+    Ok(active)
+}
+
+/// List live watcher pidfiles on the selected tmux socket.
+pub fn list_watchers(ctx: &Ctx) -> Result<()> {
+    let active = active_watchers(&watch_root(ctx))?;
+    let rows = active
+        .into_iter()
+        .map(|process| WatchListRow {
+            session: process.session,
+            pid: process.pid,
+            status: "running",
+        })
+        .collect::<Vec<_>>();
+    if ctx.json {
+        return print_json(&rows);
+    }
+    if ctx.quiet {
+        for row in rows {
+            println!("{}", row.session);
+        }
+        return Ok(());
+    }
+    if rows.is_empty() {
+        eprintln!("no active watchers");
+        return Ok(());
+    }
+    println!("{:<36} {:<8} STATUS", "SESSION", "PID");
+    for row in rows {
+        println!("{:<36} {:<8} {}", row.session, row.pid, row.status);
+    }
+    Ok(())
+}
+
+/// Stop the watcher recorded for one session and clear its armed marker.
+pub fn stop_watcher(ctx: &Ctx, args: WatchTargetArgs) -> Result<()> {
+    let session_name = session::resolve_existing_name(&ctx.tmux, &ctx.cfg, &args.target);
+    let root = watch_root(ctx);
+    let path = pidfile_path(&root, &session_name);
+    let Some(process) = read_process(&path) else {
+        die(
+            code::NOT_FOUND,
+            format!("No watcher for session {session_name}"),
+        );
+    };
+    if process_alive(process.pid) {
+        let status = Command::new("kill")
+            .args(["-TERM", &process.pid.to_string()])
+            .status()
+            .context("stopping session watcher")?;
+        if !status.success() {
+            bail!("could not stop watcher pid {}", process.pid);
+        }
+        for _ in 0..40 {
+            if !process_alive(process.pid) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+    let _ = std::fs::remove_file(path);
+    session::set_watch_armed(&ctx.tmux, &session_name, false);
+    append_log(&root, &session_name, "watcher stopped by command");
+    Ok(())
 }
 
 #[cfg(test)]
@@ -356,8 +771,10 @@ mod tests {
     fn disabled_or_exhausted_auto_enter_escalates() {
         let rules = RuleSet::compile(&[]).unwrap();
         let matched = rules.matched("Enter to confirm").unwrap();
-        let mut disabled = WatchCfg::default();
-        disabled.auto_enter = false;
+        let disabled = WatchCfg {
+            auto_enter: false,
+            ..WatchCfg::default()
+        };
         let mut state = WatchState::default();
         state.observe(seconds(0), 1, Some(&matched), &disabled);
         assert!(matches!(
@@ -365,8 +782,10 @@ mod tests {
             Some(WatchDecision::Escalate { .. })
         ));
 
-        let mut exhausted = WatchCfg::default();
-        exhausted.max_enters = 0;
+        let exhausted = WatchCfg {
+            max_enters: 0,
+            ..WatchCfg::default()
+        };
         let mut state = WatchState::default();
         state.observe(seconds(0), 1, Some(&matched), &exhausted);
         assert!(matches!(

@@ -35,6 +35,27 @@ impl Paths {
     pub fn exited_dir(&self) -> PathBuf {
         self.state_dir.join("exited")
     }
+
+    /// Resolve private state for one feature and tmux socket identity.
+    pub fn socket_state_dir(&self, feature: &str, socket: Option<&str>) -> PathBuf {
+        let socket = socket
+            .map(encode_state_component)
+            .unwrap_or_else(|| "default".to_string());
+        self.state_dir.join(feature).join(socket)
+    }
+}
+
+pub(crate) fn encode_state_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-' => {
+                encoded.push(byte as char)
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
 }
 
 fn resolve(env: &str, home: &Path, suffix: &[&str]) -> PathBuf {
@@ -74,6 +95,23 @@ mod tests {
         assert_eq!(
             default_path(&home, DEFAULT_STATE_SUFFIX),
             PathBuf::from("/Users/shadowfax/.tpp/data")
+        );
+    }
+
+    #[test]
+    fn socket_state_dir_encodes_named_socket_identity() {
+        let paths = Paths {
+            config_dir: PathBuf::new(),
+            state_dir: PathBuf::from("/state"),
+        };
+
+        assert_eq!(
+            paths.socket_state_dir("watch", Some("path:/tmp/tmux")),
+            PathBuf::from("/state/watch/path%3A%2Ftmp%2Ftmux")
+        );
+        assert_eq!(
+            paths.socket_state_dir("watch", None),
+            PathBuf::from("/state/watch/default")
         );
     }
 }

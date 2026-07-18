@@ -13,12 +13,14 @@ use anyhow::Result;
 use serde::Serialize;
 
 use crate::config::Config;
-use crate::paths::{create_private_dir_all, Paths};
+use crate::paths::{create_private_dir_all, encode_state_component, Paths};
 use crate::tmux::{exact, tgt, Tmux, TmuxError};
 
 /// Field separator inside the `list-sessions` format.
 const SEP: char = '\u{1f}';
 const ORIGIN_PANE_OPT: &str = "@tpp_origin_pane";
+const PARENT_PANE_OPT: &str = "@tpp_parent_pane";
+const WATCH_OPT: &str = "@tpp_watch";
 const ON_EXIT_CMD_FILE_OPT: &str = "@tpp_on_exit_cmd_file";
 const ON_EXIT_MARKER_OPT: &str = "@tpp_on_exit_marker";
 const ON_EXIT_LOG_OPT: &str = "@tpp_on_exit_log";
@@ -99,17 +101,6 @@ pub fn exists(tmux: &Tmux, name: &str) -> bool {
     tmux.ok(["has-session", "-t", &exact(name)])
 }
 
-fn encode_component(name: &str) -> String {
-    let mut s = String::with_capacity(name.len());
-    for b in name.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-' => s.push(b as char),
-            _ => s.push_str(&format!("%{b:02X}")),
-        }
-    }
-    s
-}
-
 fn safe_session_name(name: &str) -> String {
     name.chars()
         .map(|c| if matches!(c, ':' | '.') { '_' } else { c })
@@ -132,10 +123,7 @@ fn unique_hook_index() -> String {
 }
 
 fn hook_root(paths: &Paths, socket: Option<&str>) -> PathBuf {
-    let socket = socket
-        .map(encode_component)
-        .unwrap_or_else(|| "default".into());
-    paths.state_dir.join("hooks").join(socket)
+    paths.socket_state_dir("hooks", socket)
 }
 
 impl OnExitHook {
@@ -149,7 +137,7 @@ impl OnExitHook {
         let hook_index = unique_hook_index();
         let base = hook_root(paths, socket);
         create_private_dir_all(&base)?;
-        let stem = format!("{}-{hook_index}", encode_component(session_name));
+        let stem = format!("{}-{hook_index}", encode_state_component(session_name));
         let command_file = base.join(format!("{stem}.cmd"));
         let runner = base.join(format!("{stem}.sh"));
         let marker = base.join(format!("{stem}.once"));
@@ -321,6 +309,25 @@ pub fn stamp_origin_pane(tmux: &Tmux, target: &str) {
         if !pane.is_empty() {
             set_opt(tmux, target, ORIGIN_PANE_OPT, pane);
         }
+    }
+}
+
+/// Return the dispatching pane stored for parent escalation, if one was recorded.
+pub fn parent_pane(tmux: &Tmux, name: &str) -> Option<String> {
+    show_opt(tmux, name, PARENT_PANE_OPT)
+}
+
+/// Return the working directory recorded when the session was created.
+pub fn session_dir(tmux: &Tmux, name: &str) -> Option<String> {
+    show_opt(tmux, name, "@tpp_dir")
+}
+
+/// Mark or clear whether a session currently has an armed watcher.
+pub fn set_watch_armed(tmux: &Tmux, target: &str, armed: bool) {
+    if armed {
+        set_opt(tmux, target, WATCH_OPT, "1");
+    } else {
+        let _ = tmux.run(["set-option", "-u", "-t", &tgt(target), WATCH_OPT]);
     }
 }
 
@@ -594,6 +601,8 @@ pub struct NewOpts {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub on_exit: Option<OnExitHook>,
+    pub parent_pane: Option<String>,
+    pub watch: bool,
 }
 
 /// Create a detached, tpp-tagged session. Caller guarantees the name is free (or uses
@@ -658,6 +667,10 @@ pub fn create(tmux: &Tmux, cfg: &Config, opts: NewOpts) -> Result<String> {
     set_opt(tmux, &target, "@tpp_cmd", &cmd_label);
     set_opt(tmux, &target, "@tpp_created", &now_epoch().to_string());
     stamp_origin_pane(tmux, &target);
+    if let Some(parent_pane) = &opts.parent_pane {
+        set_opt(tmux, &target, PARENT_PANE_OPT, parent_pane);
+    }
+    set_watch_armed(tmux, &target, opts.watch);
     if let Some(hook) = &opts.on_exit {
         install_on_exit_hook(tmux, &target, hook)?;
     }
