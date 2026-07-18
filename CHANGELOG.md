@@ -24,6 +24,10 @@ agents.
 - **Sfmux lifecycle:** `has --alive` checks the root pane process instead of session existence;
   `ls --json` includes `state`, `pane_dead`, root `pid`, and `exit_status`; `new --on-exit`
   runs an exactly-once shell hook for pane exit and teardown paths.
+- **Stuck-session watchdog:** command-bearing `new` sessions launch a detached watcher that
+  auto-confirms known trust/continue prompts, ignores known idle screens, and escalates unknown
+  stable output through the dispatching parent pane plus an optional notification command.
+  Includes `new --no-watch`, `new --parent-pane`, `run --watch`, and `watch run|ls|stop`.
 - **Sfmux pane targets:** `bind`, `targets`, and `unbind` name arbitrary tmux panes through pane
   user-options, and `send`, `paste`, `cat`, and `wait` accept `pane:<name>`.
 - **tmux-compat verbs** (`has-session`, `new-session`, `attach-session`, `kill-session`,
