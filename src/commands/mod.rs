@@ -45,9 +45,36 @@ pub fn no_such_session(name: &str) -> ! {
     die(code::NOT_FOUND, no_such_session_message(name))
 }
 
-/// Resolve a tpp session to the pane high-level commands should operate on.
-pub(crate) fn session_pane_target(tmux: &Tmux, name: &str) -> String {
-    session::origin_pane(tmux, name).unwrap_or_else(|| tgt(name))
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OriginPaneGone {
+    session: String,
+}
+
+impl std::fmt::Display for OriginPaneGone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "origin pane gone for {} (startup window closed?)",
+            self.session
+        )
+    }
+}
+
+/// Resolve a session to its live startup pane while preserving unstamped legacy fallback.
+pub(crate) fn session_pane_target(tmux: &Tmux, name: &str) -> Result<String, OriginPaneGone> {
+    let Some(pane) = session::origin_pane(tmux, name) else {
+        return Ok(tgt(name));
+    };
+    if tmux.ok(["display-message", "-p", "-t", &pane, "#{pane_id}"]) || !session::exists(tmux, name)
+    {
+        return Ok(pane);
+    }
+    Err(OriginPaneGone { session: tgt(name) })
+}
+
+/// Resolve the startup pane or exit through the stable not-found path.
+pub(crate) fn require_session_pane_target(tmux: &Tmux, name: &str) -> String {
+    session_pane_target(tmux, name).unwrap_or_else(|err| die(code::NOT_FOUND, err.to_string()))
 }
 
 /// Resolve the session a single-target command should act on.
@@ -84,7 +111,7 @@ pub fn capture(
     escape: bool,
     all_history: bool,
 ) -> Result<String, TmuxError> {
-    let target = session_pane_target(tmux, name);
+    let target = session_pane_target(tmux, name).map_err(|_| TmuxError::NotFound)?;
     let mut args: Vec<String> = vec![
         "capture-pane".into(),
         "-p".into(),
@@ -128,24 +155,22 @@ pub fn trim_trailing_blank(s: &str) -> String {
 
 /// Whether the output pane's command has exited.
 pub fn pane_dead(tmux: &Tmux, name: &str) -> bool {
-    tmux.run([
-        "display-message",
-        "-p",
-        "-t",
-        &session_pane_target(tmux, name),
-        "#{pane_dead}",
-    ])
-    .map(|s| s.trim() == "1")
-    .unwrap_or(false)
+    let Ok(target) = session_pane_target(tmux, name) else {
+        return true;
+    };
+    tmux.run(["display-message", "-p", "-t", &target, "#{pane_dead}"])
+        .map(|s| s.trim() == "1")
+        .unwrap_or(false)
 }
 
 /// Exit status of a dead pane, if tmux reports one.
 pub fn pane_dead_status(tmux: &Tmux, name: &str) -> Option<i32> {
+    let target = session_pane_target(tmux, name).ok()?;
     tmux.run([
         "display-message",
         "-p",
         "-t",
-        &session_pane_target(tmux, name),
+        &target,
         "#{pane_dead_status}",
     ])
     .ok()

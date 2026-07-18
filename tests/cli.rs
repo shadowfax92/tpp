@@ -1680,6 +1680,22 @@ fn compat_new_session_cat_uses_original_pane_after_active_window_changes() {
     let raw = wait_for_raw_capture(&server, "tpp/codex/compat", "compat-other-output");
     assert!(raw.contains("compat-other-output"));
 
+    let compat_capture = run_tpp(
+        &server,
+        tmp.path(),
+        &["capture-pane", "-t", "codex/compat", "-p"],
+    );
+    assert_success(&compat_capture);
+    let compat_stdout = String::from_utf8_lossy(&compat_capture.stdout);
+    assert!(
+        compat_stdout.contains("compat-original-output"),
+        "{compat_stdout}"
+    );
+    assert!(
+        !compat_stdout.contains("compat-other-output"),
+        "{compat_stdout}"
+    );
+
     let cat = run_tpp(&server, tmp.path(), &["cat", "codex/compat"]);
     assert_success(&cat);
     let stdout = String::from_utf8_lossy(&cat.stdout);
@@ -1688,7 +1704,7 @@ fn compat_new_session_cat_uses_original_pane_after_active_window_changes() {
 }
 
 #[test]
-fn compat_send_keys_keeps_tmux_active_pane_targeting() {
+fn compat_io_uses_origin_pane_and_preserves_explicit_targets() {
     if !tmux_available() {
         return;
     }
@@ -1711,10 +1727,21 @@ fn compat_send_keys_keeps_tmux_active_pane_targeting() {
             &origin_cmd,
         ],
     ));
-    assert_success(&run_tmux(
+    let other = run_tmux(
         &server,
-        &["new-window", "-t", "tpp/codex/compat-active", &other_cmd],
-    ));
+        &[
+            "new-window",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "-t",
+            "tpp/codex/compat-active",
+            &other_cmd,
+        ],
+    );
+    assert_success(&other);
+    let other_pane = String::from_utf8_lossy(&other.stdout).trim().to_string();
+    assert!(!other_pane.is_empty());
 
     assert_success(&run_tpp(
         &server,
@@ -1723,15 +1750,68 @@ fn compat_send_keys_keeps_tmux_active_pane_targeting() {
             "send-keys",
             "-t",
             "codex/compat-active",
-            "compat-active",
+            "send-origin",
             "Enter",
         ],
     ));
 
-    assert_eq!(wait_for_file_lines(&other_input, 1), "compat-active\n");
+    assert_eq!(wait_for_file_lines(&origin_input, 1), "send-origin\n");
     assert_eq!(
-        std::fs::read_to_string(origin_input).unwrap_or_default(),
+        std::fs::read_to_string(&other_input).unwrap_or_default(),
         ""
+    );
+
+    assert_success(&run_tmux(
+        &server,
+        &["set-buffer", "-b", "compat-paste", "paste-origin\n"],
+    ));
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &[
+            "paste-buffer",
+            "-b",
+            "compat-paste",
+            "-t",
+            "codex/compat-active",
+        ],
+    ));
+    assert_eq!(
+        wait_for_file_lines(&origin_input, 2),
+        "send-origin\npaste-origin\n"
+    );
+
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["send-keys", "-t", &other_pane, "send-explicit", "Enter"],
+    ));
+    assert_eq!(wait_for_file_lines(&other_input, 1), "send-explicit\n");
+}
+
+#[test]
+fn compat_io_forwards_missing_session_targets_to_tmux() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    assert_success(&run_tmux(
+        &server,
+        &["new-session", "-d", "-s", "unrelated", "sleep 5"],
+    ));
+    let out = run_tpp(
+        &server,
+        tmp.path(),
+        &["capture-pane", "-t", "codex/missing", "-p"],
+    );
+
+    assert_exit_code(&out, 1);
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("session not found"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
     );
 }
 

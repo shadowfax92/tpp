@@ -12,8 +12,8 @@ use serde::Serialize;
 
 use crate::cli::{CatArgs, PasteArgs, SendArgs, TailArgs, WaitArgs};
 use crate::commands::{
-    capture, code, die, last_lines, no_such_session, pane, pane_dead, pane_dead_status, select,
-    session_pane_target, trim_trailing_blank, Ctx,
+    capture, code, die, last_lines, no_such_session, pane, pane_dead, pane_dead_status,
+    require_session_pane_target, select, trim_trailing_blank, Ctx,
 };
 use crate::output::{paint, print_json, Style};
 use crate::session;
@@ -89,7 +89,7 @@ fn resolve_io_target(ctx: &Ctx, explicit: Option<&str>, action: &str) -> Result<
         }
     }
     let name = select::one(ctx, explicit, action)?;
-    let pane_target = session_pane_target(&ctx.tmux, &name);
+    let pane_target = require_session_pane_target(&ctx.tmux, &name);
     Ok(IoTarget::Session { name, pane_target })
 }
 
