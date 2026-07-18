@@ -120,8 +120,11 @@ pub struct WatchCfg {
     pub poll: DurationCfg,
     pub prompt_stable: DurationCfg,
     pub stuck_after: DurationCfg,
+    /// Enables automated sends for both `enter` and `keys` rules.
     pub auto_enter: bool,
+    /// Maximum automated sends per unchanged-screen episode.
     pub max_enters: u32,
+    pub builtin_rules: bool,
     pub nudge_parent: bool,
     pub notify: String,
     pub cooldown: DurationCfg,
@@ -133,12 +136,15 @@ pub struct WatchCfg {
 pub struct WatchRuleCfg {
     pub pattern: String,
     pub action: WatchAction,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WatchAction {
     Enter,
+    Keys,
     Notify,
     Ignore,
 }
@@ -231,6 +237,7 @@ impl Default for WatchCfg {
             stuck_after: DurationCfg::from_secs(30),
             auto_enter: true,
             max_enters: 2,
+            builtin_rules: true,
             nudge_parent: true,
             notify: String::new(),
             cooldown: DurationCfg::from_secs(10 * 60),
@@ -411,12 +418,39 @@ prompt_stable = "5s"
 stuck_after = "30s"
 auto_enter = true
 max_enters = 2
+builtin_rules = true
 nudge_parent = true
 notify = ""
 # notify = "mac-notify send --blocker \"tpp {session}: {reason}\""
 cooldown = "10m"
 
 # User rules run before built-ins; plain patterns are substrings and /.../ patterns are regexes.
+# Set builtin_rules = false above to use only the rules you define here.
+# [[watch.rules]]
+# pattern = "Retry with a faster model"
+# action = "keys"
+# keys = ["Down", "Enter"]
+
+# [[watch.rules]]
+# pattern = "? for shortcuts"
+# action = "ignore"
+
+# [[watch.rules]]
+# pattern = "Press enter to continue"
+# action = "enter"
+
+# [[watch.rules]]
+# pattern = "Enter to confirm"
+# action = "enter"
+
+# [[watch.rules]]
+# pattern = "Do you trust"
+# action = "enter"
+
+# [[watch.rules]]
+# pattern = "trust this folder"
+# action = "enter"
+
 # [[watch.rules]]
 # pattern = "Sign in to continue"
 # action = "notify"
@@ -520,6 +554,7 @@ mod tests {
         assert_eq!(watch.stuck_after.as_secs(), 30);
         assert!(watch.auto_enter);
         assert_eq!(watch.max_enters, 2);
+        assert!(watch.builtin_rules);
         assert!(watch.nudge_parent);
         assert!(watch.notify.is_empty());
         assert_eq!(watch.cooldown.as_secs(), 10 * 60);
@@ -564,6 +599,42 @@ action = "ignore"
         assert_eq!(cfg.watch.rules.len(), 2);
         assert_eq!(cfg.watch.rules[0].action, WatchAction::Notify);
         assert_eq!(cfg.watch.rules[1].action, WatchAction::Ignore);
+        assert!(cfg.watch.rules.iter().all(|rule| rule.keys.is_empty()));
+    }
+
+    #[test]
+    fn parse_keys_rule_and_serialize_keyless_rules_without_empty_keys() {
+        let cfg = Config::parse(
+            r#"
+[watch]
+builtin_rules = false
+
+[[watch.rules]]
+pattern = "Retry with a faster model"
+action = "keys"
+keys = ["Down", "Enter"]
+
+[[watch.rules]]
+pattern = "Sign in to continue"
+action = "notify"
+"#,
+        )
+        .unwrap();
+
+        assert!(!cfg.watch.builtin_rules);
+        assert_eq!(cfg.watch.rules[0].action, WatchAction::Keys);
+        assert_eq!(cfg.watch.rules[0].keys, ["Down", "Enter"]);
+        assert!(cfg.watch.rules[1].keys.is_empty());
+
+        let serialized = toml::to_string(&cfg).unwrap();
+        assert_eq!(serialized.matches("keys =").count(), 1);
+    }
+
+    #[test]
+    fn partial_watch_config_enables_builtin_rules_by_default() {
+        let cfg = Config::parse("[watch]\nenabled = false\n").unwrap();
+
+        assert!(cfg.watch.builtin_rules);
     }
 
     #[test]
@@ -576,6 +647,7 @@ action = "ignore"
             "stuck_after = \"30s\"",
             "auto_enter = true",
             "max_enters = 2",
+            "builtin_rules = true",
             "nudge_parent = true",
             "notify = \"\"",
             "cooldown = \"10m\"",

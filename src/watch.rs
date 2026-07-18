@@ -199,6 +199,9 @@ impl WatchState {
                     WatchAction::Notify => {
                         self.escalate(now, cfg, format!("matched watch rule {:?}", rule.source))
                     }
+                    WatchAction::Keys => {
+                        self.escalate(now, cfg, format!("matched keys rule {:?}", rule.source))
+                    }
                     WatchAction::Ignore => None,
                 }
             }
@@ -848,10 +851,12 @@ mod tests {
             WatchRuleCfg {
                 pattern: "Press enter".to_string(),
                 action: WatchAction::Ignore,
+                keys: Vec::new(),
             },
             WatchRuleCfg {
                 pattern: "continue".to_string(),
                 action: WatchAction::Notify,
+                keys: Vec::new(),
             },
         ])
         .unwrap();
@@ -866,6 +871,7 @@ mod tests {
         let rules = RuleSet::compile(&[WatchRuleCfg {
             pattern: "/OAuth [0-9]+/".to_string(),
             action: WatchAction::Notify,
+            keys: Vec::new(),
         }])
         .unwrap();
 
@@ -876,6 +882,7 @@ mod tests {
         assert!(RuleSet::compile(&[WatchRuleCfg {
             pattern: "/[unterminated/".to_string(),
             action: WatchAction::Notify,
+            keys: Vec::new(),
         }])
         .is_err());
     }
