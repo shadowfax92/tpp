@@ -204,10 +204,11 @@ fn appears_unsent(captured: &str, body: &str) -> bool {
         .rev()
         .filter(|line| !line.trim().is_empty())
         .take(VERIFY_COMPOSER_LINES)
-        .any(|line| {
+        .find_map(|line| {
             let line = line.trim_start();
-            (line.starts_with('›') || line.starts_with('❯')) && line.contains(&probe)
+            (line.starts_with('›') || line.starts_with('❯')).then_some(line)
         })
+        .is_some_and(|line| line.contains(&probe))
 }
 
 fn verify_delay(retry: usize) -> Duration {
@@ -1079,7 +1080,7 @@ mod tests {
     #[test]
     fn verify_submitted_ignores_submitted_echo_above_composer() {
         let body = "[worker/task] done: live projection complete — 4c4625c58";
-        let capture = format!("› {body}\nWorking\nstatus 1\nstatus 2\n›\nmodel\nfooter");
+        let capture = format!("› {body}\nWorking\n›\nmodel\nfooter");
         let (result, enters) = verify_captures(body, vec![capture]);
 
         result.unwrap();
