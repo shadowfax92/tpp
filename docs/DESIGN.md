@@ -53,8 +53,9 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
   exist because someone edited pane options manually, v1 resolves the first scan result.
   Removed panes disappear; panes kept by `remain-on-exit` show `dead` via `pane_dead`.
 - **Verified delivery** captures the delivery target after Enter and looks for Claude/Codex
-  pasted-content markers (`[Pasted Content`, `[Pasted text`). If a marker remains, tpp sends
-  a few extra Enters with short backoff, then exits `5` with the captured tail if still stuck.
+  pasted-content markers or the pasted body's tail on a composer prompt within the last five
+  non-empty lines. If either remains, tpp retries Enter with short backoff, then exits `5` with the
+  captured tail if still stuck. Composer scoping excludes submitted echoes in scrollback.
 - **On-exit hooks** are session-local lifecycle glue for external orchestrators. `new --on-exit`
   writes the opaque command to private tpp state, installs a root-pane `pane-died` hook plus a
   guarded global `session-closed` hook, and uses an atomic marker directory to make all paths

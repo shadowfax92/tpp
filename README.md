@@ -168,10 +168,12 @@ tpp cat "$s" | tail -40
 ```
 
 `paste` verifies submission by default for Claude/Codex-style TUIs: after Enter, tpp captures the
-target and looks for `[Pasted Content` or `[Pasted text` markers. If a marker remains, tpp sends a
-few extra Enters with short backoff. If the marker is still visible, the command exits `5` and prints
-the captured tail. `send --verify` uses the same check after `--enter`; `send --keys` skips it.
-`paste --no-enter` also skips verification because it intentionally leaves text unsubmitted.
+target and checks for `[Pasted Content` / `[Pasted text` markers or the pasted body's tail still on a
+composer prompt in the last five non-empty lines. If either remains, tpp sends a few extra Enters
+with short backoff, then exits `5` with the captured tail if still stuck. Limiting literal-body
+checks to the composer avoids mistaking submitted scrollback echoes for unsent input. `send
+--verify` uses the same check after `--enter`; `send --keys` skips it. `paste --no-enter` also skips
+verification because it intentionally leaves text unsubmitted.
 
 Named panes support mediator and ping flows without a registry:
 

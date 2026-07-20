@@ -21,6 +21,8 @@ use crate::store::Store;
 use crate::tmux::{tgt, Tmux};
 
 const VERIFY_CAPTURE_LINES: u32 = 80;
+const VERIFY_COMPOSER_LINES: usize = 5;
+const VERIFY_BODY_PROBE_CHARS: usize = 48;
 const VERIFY_TAIL_LINES: usize = 20;
 const VERIFY_RETRIES: usize = 4;
 const VERIFY_SETTLE_MS: u64 = 150;
@@ -35,7 +37,7 @@ impl fmt::Display for UnsentDelivery {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "delivery to {} appears unsent; pasted-content marker is still visible:\n{}",
+            "delivery to {} appears unsent; pasted content is still visible:\n{}",
             self.target, self.tail
         )
     }
@@ -176,13 +178,46 @@ fn has_pasted_marker(text: &str) -> bool {
     text.contains("[Pasted Content") || text.contains("[Pasted text")
 }
 
+fn body_probe(body: &str) -> Option<String> {
+    let line = body.lines().rev().find(|line| !line.trim().is_empty())?;
+    let mut chars = line
+        .trim()
+        .chars()
+        .rev()
+        .take(VERIFY_BODY_PROBE_CHARS)
+        .collect::<Vec<_>>();
+    chars.reverse();
+    Some(chars.into_iter().collect())
+}
+
+/// Submitted text can echo in scrollback, so literal-body checks require a Claude/Codex prompt
+/// in the composer tail.
+fn appears_unsent(captured: &str, body: &str) -> bool {
+    if has_pasted_marker(captured) {
+        return true;
+    }
+    let Some(probe) = body_probe(body) else {
+        return false;
+    };
+    captured
+        .lines()
+        .rev()
+        .filter(|line| !line.trim().is_empty())
+        .take(VERIFY_COMPOSER_LINES)
+        .any(|line| {
+            let line = line.trim_start();
+            (line.starts_with('›') || line.starts_with('❯')) && line.contains(&probe)
+        })
+}
+
 fn verify_delay(retry: usize) -> Duration {
     Duration::from_millis(VERIFY_SETTLE_MS * (retry as u64 + 1))
 }
 
-/// Confirm a bracketed paste marker disappeared after submission, retrying Enter if needed.
+/// Confirm pasted content left the composer after submission, retrying Enter if needed.
 fn verify_submitted<C, E, S>(
     target_label: &str,
+    body: &str,
     mut capture_target: C,
     mut send_enter: E,
     sleep: S,
@@ -195,14 +230,14 @@ where
     sleep(verify_delay(0));
     let mut captured = strip_ansi(&capture_target()?);
     for retry in 0..VERIFY_RETRIES {
-        if !has_pasted_marker(&captured) {
+        if !appears_unsent(&captured, body) {
             return Ok(());
         }
         send_enter()?;
         sleep(verify_delay(retry + 1));
         captured = strip_ansi(&capture_target()?);
     }
-    if has_pasted_marker(&captured) {
+    if appears_unsent(&captured, body) {
         return Err(UnsentDelivery {
             target: target_label.to_string(),
             tail: last_lines(&captured, VERIFY_TAIL_LINES),
@@ -256,6 +291,7 @@ fn deliver(
     if verify {
         verify_submitted(
             target_label,
+            body,
             || {
                 Ok(capture(
                     tmux,
@@ -273,6 +309,29 @@ fn deliver(
         )?;
     }
     Ok(())
+}
+
+pub(crate) fn deliver_paste(
+    tmux: &Tmux,
+    target: &str,
+    target_label: &str,
+    body: &str,
+    enter: bool,
+    enter_delay_ms: u64,
+    verify: bool,
+) -> Result<()> {
+    deliver(
+        tmux,
+        target,
+        target_label,
+        body,
+        false,
+        &[],
+        true,
+        enter,
+        enter_delay_ms,
+        verify,
+    )
 }
 
 pub fn send(ctx: &Ctx, args: SendArgs) -> Result<()> {
@@ -314,14 +373,11 @@ pub fn paste(ctx: &Ctx, args: PasteArgs) -> Result<()> {
     ensure_target_exists(ctx, &target);
     let body = body_text(args.file.as_deref(), args.stdin, &args.text)?;
     let verify = !args.no_verify && !args.no_enter;
-    let delivery = deliver(
+    let delivery = deliver_paste(
         &ctx.tmux,
         target.tmux_target(),
         &target.display(),
         &body,
-        false,
-        &[],
-        true,
         !args.no_enter,
         ctx.cfg.send.enter_delay_ms,
         verify,
@@ -907,6 +963,7 @@ mod tests {
 
         verify_submitted(
             "pane:agent",
+            "delivery body",
             || Ok(captures.borrow_mut().pop_front().unwrap()),
             || {
                 *enters.borrow_mut() += 1;
@@ -931,6 +988,7 @@ mod tests {
 
         verify_submitted(
             "pane:agent",
+            "delivery body",
             || Ok(captures.borrow_mut().pop_front().unwrap()),
             || {
                 *enters.borrow_mut() += 1;
@@ -964,6 +1022,7 @@ mod tests {
 
         let err = verify_submitted(
             "pane:agent",
+            "delivery body",
             || Ok(captures.borrow_mut().pop_front().unwrap()),
             || {
                 *enters.borrow_mut() += 1;
@@ -983,5 +1042,69 @@ mod tests {
             unsent.tail
         );
         assert!(!unsent.tail.contains("line5\n"), "{}", unsent.tail);
+    }
+
+    fn verify_captures(body: &str, captures: Vec<String>) -> (anyhow::Result<()>, usize) {
+        let captures = RefCell::new(VecDeque::from(captures));
+        let enters = RefCell::new(0);
+        let result = verify_submitted(
+            "pane:agent",
+            body,
+            || Ok(captures.borrow_mut().pop_front().unwrap()),
+            || {
+                *enters.borrow_mut() += 1;
+                Ok(())
+            },
+            |_| {},
+        );
+        let enter_count = *enters.borrow();
+        (result, enter_count)
+    }
+
+    #[test]
+    fn verify_submitted_retries_when_single_line_body_remains_in_composer() {
+        let body = "[worker/task] done: live projection complete — 4c4625c58";
+        let (result, enters) = verify_captures(
+            body,
+            vec![
+                format!("Working\n› {body}\nfooter"),
+                "Working\n›\nfooter".to_string(),
+            ],
+        );
+
+        result.unwrap();
+        assert_eq!(enters, 1);
+    }
+
+    #[test]
+    fn verify_submitted_ignores_submitted_echo_above_composer() {
+        let body = "[worker/task] done: live projection complete — 4c4625c58";
+        let capture = format!("› {body}\nWorking\nstatus 1\nstatus 2\n›\nmodel\nfooter");
+        let (result, enters) = verify_captures(body, vec![capture]);
+
+        result.unwrap();
+        assert_eq!(enters, 0);
+    }
+
+    #[test]
+    fn verify_submitted_ignores_echo_from_non_agent_pane() {
+        let body = "paste-origin";
+        let (result, enters) =
+            verify_captures(body, vec![format!("origin-readysend-origin\n{body}")]);
+
+        result.unwrap();
+        assert_eq!(enters, 0);
+    }
+
+    #[test]
+    fn verify_submitted_reports_single_line_body_after_retries() {
+        let body = "[worker/task] done: live projection complete — 4c4625c58";
+        let capture = format!("Working\n› {body}\nfooter");
+        let (result, enters) = verify_captures(body, vec![capture; 5]);
+        let err = result.unwrap_err();
+        let unsent = err.downcast_ref::<UnsentDelivery>().unwrap();
+
+        assert_eq!(enters, 4);
+        assert!(unsent.tail.contains(body), "{}", unsent.tail);
     }
 }
