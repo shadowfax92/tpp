@@ -68,8 +68,8 @@ Liveness check: `tpp has "$SESSION" --alive` (`0` running, `1` exists-but-dead, 
 Lease cleanup: `tpp new --on-exit 'sfmux pool on-session-exit ...' ...` so the hook fires once
 on natural exit, crash, `tpp exit`, `tpp rm`, or raw `tmux kill-session`. Teardown inside the
 worker can still call `tpp exit`; the once-marker prevents a double release.
-Delivery check: `tpp paste` exits `5` if `[Pasted Content` or `[Pasted text` remains visible after
-retrying Enter, which means the agent TUI appears to have kept the payload in the composer.
+Delivery check: `tpp paste` retries Enter when a pasted-content marker or the payload tail remains
+on the Claude/Codex composer, then exits `5` if the payload still appears unsent.
 
 ## Why bracketed paste matters here
 

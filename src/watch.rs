@@ -16,7 +16,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::cli::WatchTargetArgs;
-use crate::commands::io::{bracketed_paste, strip_ansi};
+use crate::commands::io::{deliver_paste, strip_ansi};
 use crate::commands::{capture, code, die, last_lines, trim_trailing_blank, Ctx};
 use crate::config::{WatchAction, WatchCfg, WatchRuleCfg};
 use crate::output::print_json;
@@ -605,9 +605,15 @@ fn nudge_message(session_name: &str, reason: &str, tail: &str) -> String {
 }
 
 fn send_parent_nudge(ctx: &Ctx, parent: &str, message: &str) -> Result<()> {
-    bracketed_paste(&ctx.tmux, parent, message)?;
-    ctx.tmux.run(["send-keys", "-t", &tgt(parent), "Enter"])?;
-    Ok(())
+    deliver_paste(
+        &ctx.tmux,
+        parent,
+        parent,
+        message,
+        true,
+        ctx.cfg.send.enter_delay_ms,
+        true,
+    )
 }
 
 fn run_notify(
