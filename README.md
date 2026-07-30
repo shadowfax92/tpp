@@ -59,6 +59,7 @@ tpp rm api                     # kill it
 
 # From a script / agent
 s=$(tpp run -- pytest -q)      # start detached, capture the session name
+tpp name -n 3                  # pre-mint three unused names without creating sessions
 tpp wait -t "$s" --exit        # block until the command finishes
 tpp cat "$s" --json            # read the output as JSON
 tpp rm "$s"
@@ -73,8 +74,9 @@ Run `tpp <cmd> --help` for full flags. Aliases in parentheses.
 
 | Command | Does |
 |---|---|
-| `run` (`r`) | Run a command in a new detached session; prints its name. `--wait` streams to completion and exits with the command's status. `--watch` opts into stuck-screen detection. |
-| `new` (`n`) | Create a detached session (your shell if no command). Command sessions get a watcher by default; `--no-watch` disables it and `--parent-pane` overrides the escalation target. `--on-exit CMD` runs a shell hook once when the root command exits. `-A` = ok if it already exists. |
+| `run` (`r`) | Run a command in a new detached session; prints its name. Without `-s`, uses a dated petname such as `snazzy-otter-0730`. `--wait` streams to completion and exits with the command's status. `--watch` opts into stuck-screen detection. |
+| `new` (`n`) | Create a detached session (your shell if no command). Without `-s`, uses a dated petname. Command sessions get a watcher by default; `--no-watch` disables it and `--parent-pane` overrides the escalation target. `--on-exit CMD` runs a shell hook once when the root command exits. `-A` = ok if it already exists. |
+| `name` | Print a fresh dated petname without creating a session. `-n N` prints N mutually unique names, one per line. |
 | `watch` | Control per-session watchers: `run -t NAME` (foreground/internal), `ls`, and `stop -t NAME`. |
 | `ls` (`l`, `list`) | List all tpp sessions. `--json` includes `state`, `pane_dead`, root `pid`, and `exit_status`; `-q` names-only; `--exited` includes recorded ones. |
 | `attach` (`a`) | Attach, or `switch-client` if you're already inside tmux. |
@@ -99,7 +101,10 @@ is pinned to that session's startup pane; explicit window/pane targets keep norm
 
 ## Built for agents
 
-- **`run` prints only the session name** on stdout (hints go to stderr) → `s=$(tpp run -- cmd)`.
+- **`run` and `name` print only session names** on stdout (hints go to stderr) →
+  `s=$(tpp run -- cmd)` or `s=$(tpp name)`.
+- **Automatic names are memorable petnames**: `<adjective>-<animal>-<mmdd>`, with the
+  configured `session_prefix` applied as usual. Explicit `-s` names are unchanged.
 - **Stable exit codes:** `0` ok · `2` usage · `3` not found · `4` timeout · `5` pasted content appears unsent · `1` other. `has --alive` uses `1` for exists-but-dead.
 - **`--json`** on `ls`, `cat`, `wait`, and `run --wait`.
 - **Bracketed paste** delivers a prompt with `/slash` commands and newlines to a TUI exactly as
@@ -108,7 +113,7 @@ is pinned to that session's startup pane; explicit window/pane targets keep norm
   Plain session targets use the session's startup pane, even after attaches or new windows.
   If a stamped startup pane is gone, pane I/O exits `3` instead of following session focus;
   unstamped legacy sessions retain tmux's bare-session behavior.
-- **Omitted session names** use the sole session, or an `fzf` picker when there are several.
+- **Omitted session targets** use the sole session, or an `fzf` picker when there are several.
 
 ### Agent lifecycle contracts
 

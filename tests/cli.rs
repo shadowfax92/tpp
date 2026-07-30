@@ -3,6 +3,8 @@
 
 use clap::CommandFactory;
 use clap::Parser;
+use regex::Regex;
+use std::collections::HashSet;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Output, Stdio};
@@ -359,6 +361,74 @@ fn run_captures_trailing_command() {
         Some(Cmd::Run(a)) => assert_eq!(a.command, vec!["npm", "test"]),
         other => panic!("expected Run, got {other:?}"),
     }
+}
+
+#[test]
+fn name_count_flag_parses_and_rejects_zero() {
+    match parse(&["name", "--count", "4"]).cmd {
+        Some(Cmd::Name(a)) => assert_eq!(a.count, 4),
+        other => panic!("expected Name, got {other:?}"),
+    }
+    match parse(&["name", "-n", "2"]).cmd {
+        Some(Cmd::Name(a)) => assert_eq!(a.count, 2),
+        other => panic!("expected Name, got {other:?}"),
+    }
+    assert!(try_parse(&["name", "--count", "0"]).is_err());
+}
+
+#[test]
+fn name_prints_only_fresh_petnames_and_does_not_create_sessions() {
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let pattern = Regex::new(r"^tpp/[a-z]+-[a-z]+-[0-9]{4}$").unwrap();
+
+    let one = run_tpp(&server, tmp.path(), &["name"]);
+    assert_success(&one);
+    assert!(one.stderr.is_empty());
+    let one_stdout = String::from_utf8_lossy(&one.stdout);
+    let one_lines: Vec<&str> = one_stdout.lines().collect();
+    assert_eq!(one_lines.len(), 1);
+    assert!(pattern.is_match(one_lines[0]));
+
+    let many = run_tpp(&server, tmp.path(), &["name", "--count", "4"]);
+    assert_success(&many);
+    assert!(many.stderr.is_empty());
+    let many_stdout = String::from_utf8_lossy(&many.stdout);
+    let many_lines: Vec<&str> = many_stdout.lines().collect();
+    assert_eq!(many_lines.len(), 4);
+    assert!(many_lines.iter().all(|name| pattern.is_match(name)));
+    assert_eq!(
+        many_lines.iter().copied().collect::<HashSet<_>>().len(),
+        many_lines.len()
+    );
+
+    let sessions = run_tpp(&server, tmp.path(), &["-q", "ls", "--no-exited"]);
+    assert_success(&sessions);
+    assert!(sessions.stdout.is_empty());
+}
+
+#[test]
+fn new_and_run_without_explicit_names_use_petnames() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let pattern = Regex::new(r"^tpp/[a-z]+-[a-z]+-[0-9]{4}$").unwrap();
+
+    let new = run_tpp(&server, tmp.path(), &["new"]);
+    assert_success(&new);
+    let new_name = String::from_utf8_lossy(&new.stdout).trim().to_string();
+    assert!(pattern.is_match(&new_name), "{new_name}");
+
+    let run = run_tpp(&server, tmp.path(), &["run", "--", "sh", "-c", "sleep 30"]);
+    assert_success(&run);
+    let run_name = String::from_utf8_lossy(&run.stdout).trim().to_string();
+    assert!(pattern.is_match(&run_name), "{run_name}");
+    assert_ne!(new_name, run_name);
+
+    assert_success(&run_tpp(&server, tmp.path(), &["rm", "--all"]));
 }
 
 #[test]

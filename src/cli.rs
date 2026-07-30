@@ -53,6 +53,9 @@ pub enum Cmd {
     #[command(visible_alias = "n")]
     New(NewArgs),
 
+    /// Generate fresh petnames without creating sessions.
+    Name(NameArgs),
+
     /// Inspect or control per-session stuck-screen watchers.
     Watch(WatchArgs),
 
@@ -150,7 +153,7 @@ pub enum Cmd {
 
 #[derive(Args, Debug)]
 pub struct RunArgs {
-    /// Session name (auto-generated from the command if omitted).
+    /// Session name (a dated petname is generated if omitted).
     #[arg(short = 's', long = "name", value_name = "NAME")]
     pub name: Option<String>,
     /// Working directory for the session.
@@ -176,7 +179,7 @@ pub struct RunArgs {
 
 #[derive(Args, Debug)]
 pub struct NewArgs {
-    /// Session name (auto-generated from the directory if omitted).
+    /// Session name (a dated petname is generated if omitted).
     #[arg(short = 's', long = "name", value_name = "NAME")]
     pub name: Option<String>,
     /// Working directory for the session.
@@ -204,6 +207,32 @@ pub struct NewArgs {
         value_name = "CMD"
     )]
     pub command: Vec<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct NameArgs {
+    /// Number of mutually unique petnames to print.
+    #[arg(
+        short = 'n',
+        long,
+        default_value_t = 1,
+        value_name = "N",
+        value_parser = parse_positive_usize
+    )]
+    pub count: usize,
+}
+
+fn parse_positive_usize(value: &str) -> Result<usize, String> {
+    value
+        .parse::<usize>()
+        .map_err(|_| "count must be a positive integer".to_string())
+        .and_then(|count| {
+            if count == 0 {
+                Err("count must be at least 1".to_string())
+            } else {
+                Ok(count)
+            }
+        })
 }
 
 #[derive(Args, Debug)]
