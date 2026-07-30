@@ -80,8 +80,10 @@ Run `tpp <cmd> --help` for full flags. Aliases in parentheses.
 | `new` (`n`) | Create a detached session (your shell if no command). Without `-s`, uses a dated petname. Command sessions get a watcher by default; `--no-watch` disables it and `--parent-pane` overrides the escalation target. `--on-exit CMD` runs a shell hook once when the root command exits. `-A` = ok if it already exists. |
 | `name` | Print a fresh dated petname without creating a session. `-n N` prints N mutually unique names, one per line. |
 | `watch` | Control per-session watchers: `run -t NAME` (foreground/internal), `ls`, and `stop -t NAME`. |
-| `ls` (`l`, `list`) | List all tpp sessions. `--json` includes `state`, `pane_dead`, root `pid`, and `exit_status`; `-q` names-only; `--exited` includes recorded ones. |
+| `ls` (`l`, `list`) | List all tpp sessions. Sessions with unread mail show `mail:N`; `--json` includes numeric `mail_unread` plus `state`, `pane_dead`, root `pid`, and `exit_status`; `-q` names-only; `--exited` includes recorded ones. |
 | `children` | List sessions spawned from the current pane. `--pane %N` queries a pane, `-t SESSION` queries a session's startup pane, `--json` is machine-readable, and `-q` prints names only. |
+| `mail` | Send durable mail with `mail TARGET` or `mail send TARGET`; `mail ls` lists an inbox and `mail read ID` prints and marks a message read. Supports `-m`, `--file`, `--stdin`, `--subject`, and `--no-ping`. |
+| `reply` | Reply to an id in the caller's inbox, preserving the thread with `In-Reply-To`. |
 | `attach` (`a`) | Attach, or `switch-client` if you're already inside tmux. |
 | `rm` (`kill`) | Kill sessions. `--all` removes every tpp session, `--record` saves output first. |
 | `reap` | Remove stale detached sessions. Dead root panes are stale immediately; live sessions require root-window activity older than `[reap] ttl` (default `6h`). `--dry-run` previews reasons; output is recorded before removal by default. |
@@ -209,6 +211,39 @@ A removed pane cannot be listed without external state, but panes left by `remai
 The parent/child bridge uses session options tpp already stamps (`@tpp_parent_pane` and
 `@tpp_origin_pane`), so it needs no binding or external registry.
 
+## Mail
+
+Mail separates the durable message from its notification. The mailbox is the data plane:
+the full markdown body is written synchronously to private, socket-scoped files under
+`~/.tpp/data/mail/<socket>/`. Each send gets a monotonic id in both the sender's `sent/`
+and the recipient's `inbox/`, and `mail read` records a small `.read` marker. The doorbell
+is only one sanitized bracketed-paste line containing the recipient id, a short excerpt,
+and the absolute inbox path. If that paste fails, the send still exits `0` and warns on
+stderr because the message remains discoverable with `mail ls`.
+
+Mailboxes default from `$TMUX_PANE`: a tpp pane uses its session mailbox and an ordinary
+human tmux pane uses a pane-keyed fallback box. `parent` follows the recorded family link;
+`mail ls -t SESSION` and `mail read ID -t SESSION` are the explicit mediator escape hatch.
+Outside tmux, sending uses the `local` identity, while listing or replying without `-t`
+exits `2` with a hint.
+
+The script-friendly pattern is to put long content in a file and capture the recipient
+path printed on stdout:
+
+```sh
+inbox_path=$(tpp mail "$worker" --file request.md --subject "Review request")
+printf 'delivered at %s\n' "$inbox_path"
+
+# In the recipient session:
+tpp mail ls --unread
+tpp mail read m1
+tpp reply m1 --file response.md
+```
+
+`--no-ping` makes delivery entirely file-only. Session mailboxes move on `rename`, are
+cleared when a recycled name is created, and are archived with exited state on
+`rm`/`exit`/`reap`.
+
 ## Configuration
 
 `~/.config/tpp/config.toml` (path via `tpp config path`; override the dir with `$TPP_CONFIG_DIR`).
@@ -272,6 +307,8 @@ screen so `cat`/`tail` still work; `exit` / `rm --record` snapshot it under
 `~/.tpp/data/hooks/<socket>/` and guarded with an atomic once-marker.
 Per-session watcher pidfiles and `watch.log` use `~/.tpp/data/watch/<socket>/`; the detached
 watcher is the current `tpp` executable running `watch run` on the same selected socket.
+Durable mailboxes use `~/.tpp/data/mail/<socket>/`; session names and pane ids are
+percent-encoded as single filesystem components.
 
 ## Development
 

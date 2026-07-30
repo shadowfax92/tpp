@@ -15,7 +15,7 @@ use anyhow::Result;
 use clap::Parser;
 
 use cli::{Cli, Cmd, LsArgs, WatchCommand};
-use commands::{compat, family, io, lifecycle, meta, pane, Ctx};
+use commands::{compat, family, io, lifecycle, mail, meta, pane, Ctx};
 use config::Config;
 use paths::Paths;
 use store::Store;
@@ -36,6 +36,8 @@ pub fn run() -> Result<()> {
     // Forget stale exited records (best-effort; never fails a command).
     let store_socket = tmux.store_socket();
     let _ = Store::new(&paths, store_socket.as_deref()).prune(cfg.exit.prune_hours);
+    let _ =
+        mail::MailStore::new(&paths, store_socket.as_deref()).prune_archives(cfg.exit.prune_hours);
 
     let ctx = Ctx {
         tmux,
@@ -61,6 +63,8 @@ pub fn run() -> Result<()> {
         },
         Cmd::Ls(a) => lifecycle::ls(&ctx, a),
         Cmd::Children(a) => family::children(&ctx, a),
+        Cmd::Mail(a) => mail::mail(&ctx, a),
+        Cmd::Reply(a) => mail::reply(&ctx, a),
         Cmd::Attach(a) => lifecycle::attach(&ctx, a),
         Cmd::Send(a) => io::send(&ctx, a),
         Cmd::Paste(a) => io::paste(&ctx, a),

@@ -153,6 +153,36 @@ fn wait_for_raw_capture(server: &TmuxServer, target: &str, needle: &str) -> Stri
     panic!("raw tmux capture for {target} did not contain {needle:?}:\n{last}");
 }
 
+fn wait_for_joined_capture(server: &TmuxServer, target: &str, needle: &str) -> String {
+    let mut last = String::new();
+    for _ in 0..50 {
+        let out = run_tmux(server, &["capture-pane", "-p", "-J", "-t", target]);
+        assert_success(&out);
+        last = String::from_utf8_lossy(&out.stdout).to_string();
+        if last.contains(needle) {
+            return last;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!("joined tmux capture for {target} did not contain {needle:?}:\n{last}");
+}
+
+fn files_named(root: &std::path::Path, name: &str) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(files_named(&path, name));
+        } else if path.file_name().and_then(|value| value.to_str()) == Some(name) {
+            found.push(path);
+        }
+    }
+    found
+}
+
 fn wait_for_file_lines(path: &std::path::Path, count: usize) -> String {
     let mut last = String::new();
     for _ in 0..50 {
@@ -275,6 +305,30 @@ fn children_and_parent_target_flags_parse() {
     }
     assert!(try_parse(&["children", "--pane", "%1", "-t", "worker"]).is_err());
     assert!(try_parse(&["tail", "-t", "parent", "worker"]).is_err());
+}
+
+#[test]
+fn mail_reserved_verbs_and_target_short_form_parse() {
+    match parse(&["mail", "worker", "-m", "hello"]).cmd {
+        Some(Cmd::Mail(args)) => {
+            assert_eq!(args.target_or_verb, "worker");
+            assert_eq!(args.args, vec!["-m", "hello"]);
+        }
+        other => panic!("expected Mail, got {other:?}"),
+    }
+    for verb in ["ls", "read", "send"] {
+        match parse(&["mail", verb]).cmd {
+            Some(Cmd::Mail(args)) => assert_eq!(args.target_or_verb, verb),
+            other => panic!("expected reserved Mail verb, got {other:?}"),
+        }
+    }
+    match parse(&["reply", "m3", "-m", "ack"]).cmd {
+        Some(Cmd::Reply(args)) => {
+            assert_eq!(args.id, "m3");
+            assert_eq!(args.message.as_deref(), Some("ack"));
+        }
+        other => panic!("expected Reply, got {other:?}"),
+    }
 }
 
 #[test]
@@ -2799,6 +2853,316 @@ fn missing_explicit_targets_report_not_found() {
         let out = run_tpp(&server, tmp.path(), args);
         assert_not_found(&out, "tpp/codex/missing");
     }
+}
+
+#[test]
+fn mail_send_read_reply_unread_and_no_ping_flow() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    assert_success(&run_tpp(&server, tmp.path(), &["new", "-s", "sender"]));
+    assert_success(&run_tpp(&server, tmp.path(), &["new", "-s", "recipient"]));
+    let sender_pane = pane_id(&server, "tpp/sender");
+    let recipient_pane = pane_id(&server, "tpp/recipient");
+    let sentinel = tmp.path().join("ping-must-not-run");
+    let subject = format!("status; touch {}", sentinel.display());
+
+    let sent = run_tpp_from_pane(
+        &server,
+        tmp.path(),
+        &sender_pane,
+        &[
+            "mail",
+            "recipient",
+            "-m",
+            "hello from sender\nsecond line",
+            "--subject",
+            &subject,
+        ],
+    );
+    assert_success(&sent);
+    let inbox_path = std::path::PathBuf::from(String::from_utf8_lossy(&sent.stdout).trim());
+    assert!(inbox_path.is_absolute());
+    assert!(inbox_path.ends_with("inbox/m1.md"));
+    let message = std::fs::read_to_string(&inbox_path).unwrap();
+    assert!(message.contains("From: tpp/sender\n"));
+    assert!(message.contains("To: tpp/recipient\n"));
+    assert!(message.contains("Id: m1@tpp/recipient\n"));
+    assert!(message.contains(&format!("Subject: {subject}\n")));
+    assert!(message.ends_with("hello from sender\nsecond line"));
+    assert_eq!(
+        files_named(&tmp.path().join("state").join("mail"), "m1.md").len(),
+        2
+    );
+
+    let capture = wait_for_joined_capture(
+        &server,
+        &recipient_pane,
+        "[tpp mail] m1 from sender: status； touch",
+    );
+    assert!(capture.contains(&inbox_path.to_string_lossy().to_string()));
+    assert!(
+        !sentinel.exists(),
+        "ping dynamic content executed in a shell"
+    );
+
+    let unread = run_tpp_from_pane(
+        &server,
+        tmp.path(),
+        &recipient_pane,
+        &["mail", "ls", "--unread", "--json"],
+    );
+    assert_success(&unread);
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&unread.stdout).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["id"], "m1");
+    assert_eq!(rows[0]["unread"], true);
+
+    let listed = run_tpp(&server, tmp.path(), &["--json", "ls", "--no-exited"]);
+    assert_success(&listed);
+    let sessions: Vec<serde_json::Value> = serde_json::from_slice(&listed.stdout).unwrap();
+    let recipient = sessions
+        .iter()
+        .find(|row| row["name"] == "tpp/recipient")
+        .unwrap();
+    assert_eq!(recipient["mail_unread"], 1);
+
+    let read = run_tpp_from_pane(
+        &server,
+        tmp.path(),
+        &recipient_pane,
+        &["mail", "read", "m1", "--json"],
+    );
+    assert_success(&read);
+    let read: serde_json::Value = serde_json::from_slice(&read.stdout).unwrap();
+    assert_eq!(read["message"]["from"], "tpp/sender");
+    assert_eq!(read["message"]["body"], "hello from sender\nsecond line");
+
+    let unread = run_tpp_from_pane(
+        &server,
+        tmp.path(),
+        &recipient_pane,
+        &["mail", "ls", "--unread", "--json"],
+    );
+    assert_success(&unread);
+    assert_eq!(
+        serde_json::from_slice::<Vec<serde_json::Value>>(&unread.stdout)
+            .unwrap()
+            .len(),
+        0
+    );
+
+    let reply = run_tpp_from_pane(
+        &server,
+        tmp.path(),
+        &recipient_pane,
+        &["reply", "m1", "-m", "acknowledged", "--no-ping"],
+    );
+    assert_success(&reply);
+    let reply_path = std::path::PathBuf::from(String::from_utf8_lossy(&reply.stdout).trim());
+    let reply_message = std::fs::read_to_string(reply_path).unwrap();
+    assert!(reply_message.contains("From: tpp/recipient\n"));
+    assert!(reply_message.contains("To: tpp/sender\n"));
+    assert!(reply_message.contains("In-Reply-To: m1@tpp/recipient\n"));
+
+    let silent_body = tmp.path().join("silent.md");
+    std::fs::write(&silent_body, "silent-doorbell-unique").unwrap();
+    let silent = run_tpp_from_pane(
+        &server,
+        tmp.path(),
+        &sender_pane,
+        &[
+            "mail",
+            "recipient",
+            "--file",
+            silent_body.to_str().unwrap(),
+            "--no-ping",
+        ],
+    );
+    assert_success(&silent);
+    std::thread::sleep(Duration::from_millis(100));
+    let capture = run_tmux(
+        &server,
+        &["capture-pane", "-p", "-J", "-t", &recipient_pane],
+    );
+    assert_success(&capture);
+    assert!(!String::from_utf8_lossy(&capture.stdout).contains("silent-doorbell-unique"));
+
+    let stdin_mail = run_tpp_stdin(
+        &server,
+        tmp.path(),
+        &[
+            "mail",
+            "send",
+            "recipient",
+            "--stdin",
+            "--no-ping",
+        ],
+        "body from stdin",
+    );
+    assert_success(&stdin_mail);
+    let stdin_path =
+        std::path::PathBuf::from(String::from_utf8_lossy(&stdin_mail.stdout).trim());
+    assert!(std::fs::read_to_string(stdin_path)
+        .unwrap()
+        .ends_with("body from stdin"));
+}
+
+#[test]
+fn mail_parent_uses_raw_pane_fallback_box_and_pings_it() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    assert_success(&run_tmux(
+        &server,
+        &["new-session", "-d", "-s", "human-parent"],
+    ));
+    let parent_pane = pane_id(&server, "human-parent");
+    assert_success(&run_tpp_from_pane(
+        &server,
+        tmp.path(),
+        &parent_pane,
+        &["new", "-s", "child"],
+    ));
+    let child_pane = pane_id(&server, "tpp/child");
+
+    let sent = run_tpp_from_pane(
+        &server,
+        tmp.path(),
+        &child_pane,
+        &["mail", "parent", "-m", "child finished"],
+    );
+    assert_success(&sent);
+    let path = String::from_utf8_lossy(&sent.stdout).trim().to_string();
+    assert!(path.contains("/panes/"), "{path}");
+    assert!(std::path::Path::new(&path).exists());
+
+    let capture = wait_for_joined_capture(
+        &server,
+        &parent_pane,
+        "[tpp mail] m1 from child: child finished",
+    );
+    assert!(capture.contains(&path));
+
+    let unread = run_tpp_from_pane(
+        &server,
+        tmp.path(),
+        &parent_pane,
+        &["mail", "ls", "--unread", "--json"],
+    );
+    assert_success(&unread);
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&unread.stdout).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["from"], "tpp/child");
+}
+
+#[test]
+fn mail_exit_codes_and_ping_failure_preserve_written_mail() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    assert_exit_code(&run_tpp(&server, tmp.path(), &["mail", "ls"]), 2);
+    assert_exit_code(&run_tpp(&server, tmp.path(), &["mail"]), 2);
+    assert_exit_code(
+        &run_tpp(&server, tmp.path(), &["mail", "missing", "-m", "hello"]),
+        3,
+    );
+
+    assert_success(&run_tpp(&server, tmp.path(), &["new", "-s", "worker"]));
+    let missing = run_tpp(
+        &server,
+        tmp.path(),
+        &["mail", "read", "m404", "-t", "worker"],
+    );
+    assert_exit_code(&missing, 3);
+
+    let origin = pane_id(&server, "tpp/worker");
+    assert_success(&run_tmux(
+        &server,
+        &["new-window", "-t", "tpp/worker", "sleep", "30"],
+    ));
+    assert_success(&run_tmux(&server, &["kill-pane", "-t", &origin]));
+    let sent = run_tpp(
+        &server,
+        tmp.path(),
+        &["mail", "worker", "-m", "durable despite ping"],
+    );
+    assert_success(&sent);
+    assert!(
+        String::from_utf8_lossy(&sent.stderr).contains("mail written but ping"),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&sent.stderr)
+    );
+    let path = std::path::PathBuf::from(String::from_utf8_lossy(&sent.stdout).trim());
+    assert!(path.exists());
+}
+
+#[test]
+fn mail_mailbox_moves_on_rename_archives_on_remove_and_resets_on_reuse() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    assert_success(&run_tpp(&server, tmp.path(), &["new", "-s", "sender"]));
+    assert_success(&run_tpp(&server, tmp.path(), &["new", "-s", "before"]));
+    let sender_pane = pane_id(&server, "tpp/sender");
+    assert_success(&run_tpp_from_pane(
+        &server,
+        tmp.path(),
+        &sender_pane,
+        &["mail", "before", "-m", "move me", "--no-ping"],
+    ));
+
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["rename", "before", "after"],
+    ));
+    let after_pane = pane_id(&server, "tpp/after");
+    let listed = run_tpp_from_pane(&server, tmp.path(), &after_pane, &["mail", "ls", "--json"]);
+    assert_success(&listed);
+    assert_eq!(
+        serde_json::from_slice::<Vec<serde_json::Value>>(&listed.stdout)
+            .unwrap()
+            .len(),
+        1
+    );
+
+    assert_success(&run_tpp(&server, tmp.path(), &["rm", "after"]));
+    let archived = files_named(&tmp.path().join("state").join("exited"), "m1.md");
+    assert_eq!(archived.len(), 1, "{archived:?}");
+
+    assert_success(&run_tpp(&server, tmp.path(), &["new", "-s", "after"]));
+    let fresh_pane = pane_id(&server, "tpp/after");
+    let listed = run_tpp_from_pane(&server, tmp.path(), &fresh_pane, &["mail", "ls", "--json"]);
+    assert_success(&listed);
+    assert!(
+        serde_json::from_slice::<Vec<serde_json::Value>>(&listed.stdout)
+            .unwrap()
+            .is_empty()
+    );
+
+    let sent = run_tpp_from_pane(
+        &server,
+        tmp.path(),
+        &sender_pane,
+        &["mail", "after", "-m", "new generation", "--no-ping"],
+    );
+    assert_success(&sent);
+    assert!(String::from_utf8_lossy(&sent.stdout)
+        .trim()
+        .ends_with("inbox/m1.md"));
 }
 
 #[test]

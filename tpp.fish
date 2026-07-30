@@ -40,6 +40,8 @@ complete -c tpp -n "__fish_tpp_needs_command" -f -a "ls" -d 'List all tpp sessio
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "l" -d 'List all tpp sessions'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "list" -d 'List all tpp sessions'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "children" -d 'List tpp sessions spawned from a pane or session'
+complete -c tpp -n "__fish_tpp_needs_command" -f -a "mail" -d 'Send, list, and read durable file-backed messages'
+complete -c tpp -n "__fish_tpp_needs_command" -f -a "reply" -d 'Reply to a message in the caller\'s inbox'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "attach" -d 'Attach to a session (interactive)'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "a" -d 'Attach to a session (interactive)'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "send" -d 'Send typed text (optionally Enter) or keys to a session'
@@ -198,6 +200,23 @@ complete -c tpp -n "__fish_tpp_using_subcommand children" -l json -d 'Machine-re
 complete -c tpp -n "__fish_tpp_using_subcommand children" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand children" -s h -l help -d 'Print help'
 complete -c tpp -n "__fish_tpp_using_subcommand children" -s V -l version -d 'Print version'
+complete -c tpp -n "__fish_tpp_using_subcommand mail; and not __fish_seen_subcommand_from send ls read" -f -a "send" -d 'Send mail using the unambiguous long form'
+complete -c tpp -n "__fish_tpp_using_subcommand mail; and not __fish_seen_subcommand_from send ls read" -f -a "ls" -d 'List inbox messages'
+complete -c tpp -n "__fish_tpp_using_subcommand mail; and not __fish_seen_subcommand_from send ls read" -f -a "read" -d 'Read and mark one inbox message'
+complete -c tpp -n "__fish_tpp_using_subcommand mail; and not __fish_seen_subcommand_from send ls read" -f -a "parent" -d 'Send to the recorded parent pane or session'
+complete -c tpp -n "__fish_tpp_using_subcommand mail; and not __fish_seen_subcommand_from ls read" -s m -l message -d 'Use this text as the message body' -r
+complete -c tpp -n "__fish_tpp_using_subcommand mail; and not __fish_seen_subcommand_from ls read" -s f -l file -d 'Read the message body from a file' -r -F
+complete -c tpp -n "__fish_tpp_using_subcommand mail; and not __fish_seen_subcommand_from ls read" -l stdin -d 'Read the message body from stdin'
+complete -c tpp -n "__fish_tpp_using_subcommand mail; and not __fish_seen_subcommand_from ls read" -l subject -d 'Add a Subject header' -r
+complete -c tpp -n "__fish_tpp_using_subcommand mail; and not __fish_seen_subcommand_from ls read" -l no-ping -d 'Skip the pane notification'
+complete -c tpp -n "__fish_tpp_using_subcommand mail; and __fish_seen_subcommand_from ls read" -s t -l target -d 'Read another session\'s mailbox' -r
+complete -c tpp -n "__fish_tpp_using_subcommand mail; and __fish_seen_subcommand_from ls" -l unread -d 'Show only unread messages'
+complete -c tpp -n "__fish_tpp_using_subcommand mail" -l json -d 'Emit machine-readable JSON'
+complete -c tpp -n "__fish_tpp_using_subcommand mail" -s q -l quiet -d 'Suppress the path or print ids only'
+complete -c tpp -n "__fish_tpp_using_subcommand reply" -s m -l message -d 'Use this text as the reply body' -r
+complete -c tpp -n "__fish_tpp_using_subcommand reply" -s f -l file -d 'Read the reply body from a file' -r -F
+complete -c tpp -n "__fish_tpp_using_subcommand reply" -l stdin -d 'Read the reply body from stdin'
+complete -c tpp -n "__fish_tpp_using_subcommand reply" -l no-ping -d 'Skip the pane notification'
 complete -c tpp -n "__fish_tpp_using_subcommand attach" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
 complete -c tpp -n "__fish_tpp_using_subcommand attach" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
 complete -c tpp -n "__fish_tpp_using_subcommand attach" -l json -d 'Machine-readable JSON output (where supported)'

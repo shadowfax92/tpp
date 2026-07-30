@@ -66,6 +66,12 @@ pub enum Cmd {
     /// List tpp sessions spawned from a pane or session.
     Children(ChildrenArgs),
 
+    /// Send, list, and read durable file-backed messages.
+    Mail(MailArgs),
+
+    /// Reply to a message in the caller's inbox.
+    Reply(ReplyArgs),
+
     /// Attach to a session (interactive).
     #[command(visible_alias = "a")]
     Attach(AttachArgs),
@@ -284,6 +290,124 @@ pub struct ChildrenArgs {
     /// Query children spawned from this session's startup pane.
     #[arg(short = 't', long, value_name = "SESSION", conflicts_with = "pane")]
     pub target: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct MailArgs {
+    /// Recipient session, or one of the reserved verbs: send, ls, read.
+    #[arg(value_name = "TARGET|VERB")]
+    pub target_or_verb: String,
+    /// Arguments for the selected mail operation.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub args: Vec<String>,
+}
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "tpp mail send",
+    no_binary_name = true,
+    disable_version_flag = true
+)]
+pub struct MailSendArgs {
+    /// Recipient session, or parent.
+    #[arg(value_name = "TARGET")]
+    pub target: String,
+    /// Use this text as the message body.
+    #[arg(
+        short = 'm',
+        long = "message",
+        value_name = "TEXT",
+        conflicts_with_all = ["file", "stdin"]
+    )]
+    pub message: Option<String>,
+    /// Read the message body from a file.
+    #[arg(
+        short = 'f',
+        long = "file",
+        value_name = "PATH",
+        conflicts_with = "stdin"
+    )]
+    pub file: Option<PathBuf>,
+    /// Read the message body from stdin.
+    #[arg(long, conflicts_with = "file")]
+    pub stdin: bool,
+    /// Add a Subject header and use it as the ping excerpt.
+    #[arg(long, value_name = "SUBJECT")]
+    pub subject: Option<String>,
+    /// Write the mail without pasting a notification.
+    #[arg(long)]
+    pub no_ping: bool,
+    /// Suppress the recipient inbox path.
+    #[arg(short, long)]
+    pub quiet: bool,
+}
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "tpp mail ls",
+    no_binary_name = true,
+    disable_version_flag = true
+)]
+pub struct MailLsArgs {
+    /// Read another session's mailbox.
+    #[arg(short = 't', long, value_name = "SESSION")]
+    pub target: Option<String>,
+    /// Show only unread inbox messages.
+    #[arg(long)]
+    pub unread: bool,
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+    /// Print message ids only.
+    #[arg(short, long)]
+    pub quiet: bool,
+}
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "tpp mail read",
+    no_binary_name = true,
+    disable_version_flag = true
+)]
+pub struct MailReadArgs {
+    /// Message id in the selected inbox.
+    #[arg(value_name = "ID")]
+    pub id: String,
+    /// Read another session's mailbox.
+    #[arg(short = 't', long, value_name = "SESSION")]
+    pub target: Option<String>,
+    /// Emit the parsed message as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ReplyArgs {
+    /// Message id in the caller's inbox.
+    #[arg(value_name = "ID")]
+    pub id: String,
+    /// Use this text as the reply body.
+    #[arg(
+        short = 'm',
+        long = "message",
+        value_name = "TEXT",
+        conflicts_with_all = ["file", "stdin"]
+    )]
+    pub message: Option<String>,
+    /// Read the reply body from a file.
+    #[arg(
+        short = 'f',
+        long = "file",
+        value_name = "PATH",
+        conflicts_with = "stdin"
+    )]
+    pub file: Option<PathBuf>,
+    /// Read the reply body from stdin.
+    #[arg(long, conflicts_with = "file")]
+    pub stdin: bool,
+    /// Write the reply without pasting a notification.
+    #[arg(long)]
+    pub no_ping: bool,
 }
 
 #[derive(Args, Debug)]

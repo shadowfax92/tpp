@@ -4,6 +4,7 @@ pub mod compat;
 pub mod family;
 pub mod io;
 pub mod lifecycle;
+pub mod mail;
 pub mod meta;
 pub mod pane;
 pub mod select;
