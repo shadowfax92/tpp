@@ -12,7 +12,7 @@ use serde::Serialize;
 
 use crate::cli::{CatArgs, PasteArgs, SendArgs, TailArgs, WaitArgs};
 use crate::commands::{
-    capture, code, die, last_lines, no_such_session, pane, pane_dead, pane_dead_status,
+    capture, code, die, family, last_lines, no_such_session, pane, pane_dead, pane_dead_status,
     require_session_pane_target, select, session_pane_target, trim_trailing_blank, Ctx,
 };
 use crate::output::{paint, print_json, Style};
@@ -46,23 +46,45 @@ impl fmt::Display for UnsentDelivery {
 impl Error for UnsentDelivery {}
 
 #[derive(Debug, Clone)]
+enum RawPaneKind {
+    Named(String),
+    Parent,
+}
+
+impl RawPaneKind {
+    fn display(&self) -> String {
+        match self {
+            Self::Named(name) => format!("pane:{name}"),
+            Self::Parent => family::PARENT_TARGET.to_string(),
+        }
+    }
+
+    fn gone(&self) -> ! {
+        match self {
+            Self::Named(name) => no_such_pane_target(name),
+            Self::Parent => die(code::NOT_FOUND, "parent pane gone"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 enum IoTarget {
     Session { name: String, pane_target: String },
-    Pane { name: String, pane_id: String },
+    RawPane { kind: RawPaneKind, pane_id: String },
 }
 
 impl IoTarget {
     fn tmux_target(&self) -> &str {
         match self {
             IoTarget::Session { pane_target, .. } => pane_target,
-            IoTarget::Pane { pane_id, .. } => pane_id,
+            IoTarget::RawPane { pane_id, .. } => pane_id,
         }
     }
 
     fn display(&self) -> String {
         match self {
             IoTarget::Session { name, .. } => name.clone(),
-            IoTarget::Pane { name, .. } => format!("pane:{name}"),
+            IoTarget::RawPane { kind, .. } => kind.display(),
         }
     }
 }
@@ -76,8 +98,8 @@ fn resolve_pane_target(ctx: &Ctx, name: &str) -> Result<IoTarget> {
         die(code::USAGE, err.to_string());
     }
     match pane::resolve_bound_pane(&ctx.tmux, name)? {
-        Some(bound) => Ok(IoTarget::Pane {
-            name: bound.name,
+        Some(bound) => Ok(IoTarget::RawPane {
+            kind: RawPaneKind::Named(bound.name),
             pane_id: bound.pane_id,
         }),
         None => no_such_pane_target(name),
@@ -86,6 +108,12 @@ fn resolve_pane_target(ctx: &Ctx, name: &str) -> Result<IoTarget> {
 
 fn resolve_io_target(ctx: &Ctx, explicit: Option<&str>, action: &str) -> Result<IoTarget> {
     if let Some(raw) = explicit {
+        if family::is_parent_target(raw) {
+            return Ok(IoTarget::RawPane {
+                kind: RawPaneKind::Parent,
+                pane_id: family::resolve_parent_pane(ctx),
+            });
+        }
         if let Some(name) = pane::pane_target_name(raw) {
             return resolve_pane_target(ctx, name);
         }
@@ -98,7 +126,7 @@ fn resolve_io_target(ctx: &Ctx, explicit: Option<&str>, action: &str) -> Result<
 fn target_exists(ctx: &Ctx, target: &IoTarget) -> bool {
     match target {
         IoTarget::Session { name, .. } => session::exists(&ctx.tmux, name),
-        IoTarget::Pane { pane_id, .. } => {
+        IoTarget::RawPane { pane_id, .. } => {
             ctx.tmux
                 .ok(["display-message", "-p", "-t", pane_id, "#{pane_id}"])
         }
@@ -112,12 +140,12 @@ fn ensure_target_exists(ctx: &Ctx, target: &IoTarget) {
                 no_such_session(name);
             }
         }
-        IoTarget::Pane { name, pane_id } => {
+        IoTarget::RawPane { kind, pane_id } => {
             if !ctx
                 .tmux
                 .ok(["display-message", "-p", "-t", pane_id, "#{pane_id}"])
             {
-                no_such_pane_target(name);
+                kind.gone();
             }
         }
     }
@@ -361,6 +389,7 @@ pub fn send(ctx: &Ctx, args: SendArgs) -> Result<()> {
     );
     if delivery.is_err() {
         ensure_origin_available(ctx, &target);
+        ensure_target_exists(ctx, &target);
     }
     handle_delivery_result(delivery)?;
     if !ctx.quiet {
@@ -385,6 +414,7 @@ pub fn paste(ctx: &Ctx, args: PasteArgs) -> Result<()> {
     );
     if delivery.is_err() {
         ensure_origin_available(ctx, &target);
+        ensure_target_exists(ctx, &target);
     }
     handle_delivery_result(delivery)?;
     if !ctx.quiet {
@@ -404,7 +434,7 @@ struct CatTarget {
     resolved: String,
     raw: Option<String>,
     display: String,
-    pane_name: Option<String>,
+    raw_pane: Option<RawPaneKind>,
 }
 
 /// Build the implicit `cat` picker from live sessions plus socket-scoped recorded transcripts.
@@ -444,20 +474,29 @@ fn cat_picker_targets(
                 resolved: name.clone(),
                 display: name,
                 raw: None,
-                pane_name: None,
+                raw_pane: None,
             })
             .collect(),
     )
 }
 
 fn cat_explicit_target(ctx: &Ctx, name: &str) -> Result<CatTarget> {
+    if family::is_parent_target(name) {
+        let kind = RawPaneKind::Parent;
+        return Ok(CatTarget {
+            resolved: family::resolve_parent_pane(ctx),
+            raw: None,
+            display: kind.display(),
+            raw_pane: Some(kind),
+        });
+    }
     if let Some(pane_name) = pane::pane_target_name(name) {
         let target = resolve_pane_target(ctx, pane_name)?;
         return Ok(CatTarget {
             resolved: target.tmux_target().to_string(),
             raw: None,
             display: target.display(),
-            pane_name: Some(pane_name.to_string()),
+            raw_pane: Some(RawPaneKind::Named(pane_name.to_string())),
         });
     }
     let resolved = session::resolve_existing_name(&ctx.tmux, &ctx.cfg, name);
@@ -465,7 +504,7 @@ fn cat_explicit_target(ctx: &Ctx, name: &str) -> Result<CatTarget> {
         resolved: resolved.clone(),
         raw: Some(tgt(name)),
         display: resolved,
-        pane_name: None,
+        raw_pane: None,
     })
 }
 
@@ -567,7 +606,7 @@ pub fn cat(ctx: &Ctx, args: CatArgs) -> Result<()> {
 
     for target in &targets {
         let mut display_name = target.display.as_str();
-        let (status, output) = if target.pane_name.is_some() {
+        let (status, output) = if let Some(raw_pane) = &target.raw_pane {
             let raw = capture(
                 &ctx.tmux,
                 &target.resolved,
@@ -575,9 +614,7 @@ pub fn cat(ctx: &Ctx, args: CatArgs) -> Result<()> {
                 args.escape,
                 args.all_history,
             )
-            .unwrap_or_else(|_| {
-                no_such_pane_target(target.pane_name.as_deref().unwrap_or_default())
-            });
+            .unwrap_or_else(|_| raw_pane.gone());
             let trimmed = trim_trailing_blank(&raw);
             let out = if args.all_history {
                 trimmed
@@ -676,19 +713,30 @@ fn appended<'a>(prev: &str, cur: &'a str) -> &'a str {
 /// Follow one or more sessions. Polls a capture window each tick and prints the delta. Stops
 /// when all targets are gone or dead.
 pub fn tail(ctx: &Ctx, args: TailArgs) -> Result<()> {
-    let targets = select::many(ctx, &args.sessions, "tail")?;
-    for name in &targets {
-        if !session::exists(&ctx.tmux, name) {
-            no_such_session(name);
-        }
+    let explicit = args
+        .target
+        .as_ref()
+        .map(|target| vec![target.clone()])
+        .unwrap_or(args.sessions);
+    let names = if explicit.is_empty() {
+        select::many(ctx, &explicit, "tail")?
+    } else {
+        explicit
+    };
+    let targets = names
+        .iter()
+        .map(|name| resolve_io_target(ctx, Some(name), "tail"))
+        .collect::<Result<Vec<_>>>()?;
+    for target in &targets {
+        ensure_target_exists(ctx, target);
     }
     let interval = Duration::from_millis(args.interval.unwrap_or(ctx.cfg.tail.interval_ms).max(50));
     let window: u32 = 500;
     let multi = targets.len() > 1;
 
-    let label = |name: &str| {
+    let label = |target: &IoTarget| {
         if multi {
-            paint(&format!("[{name}] "), Style::Cyan)
+            paint(&format!("[{}] ", target.display()), Style::Cyan)
         } else {
             String::new()
         }
@@ -697,17 +745,17 @@ pub fn tail(ctx: &Ctx, args: TailArgs) -> Result<()> {
     // Seed with an initial snapshot so we only stream genuinely new output afterwards.
     let mut last: Vec<String> = Vec::with_capacity(targets.len());
     let initial = args.lines.unwrap_or(0);
-    for name in &targets {
-        let pane_target = require_session_pane_target(&ctx.tmux, name);
-        let snap =
-            capture(&ctx.tmux, &pane_target, Some(window), false, false).unwrap_or_else(|_| {
-                require_session_pane_target(&ctx.tmux, name);
+    for target in &targets {
+        let snap = capture(&ctx.tmux, target.tmux_target(), Some(window), false, false)
+            .unwrap_or_else(|_| {
+                ensure_origin_available(ctx, target);
+                ensure_target_exists(ctx, target);
                 String::new()
             });
         if initial > 0 {
             let shown = trim_trailing_blank(&last_lines(&snap, initial as usize));
             for line in shown.lines() {
-                println!("{}{line}", label(name));
+                println!("{}{line}", label(target));
             }
         }
         last.push(snap);
@@ -715,15 +763,19 @@ pub fn tail(ctx: &Ctx, args: TailArgs) -> Result<()> {
 
     loop {
         let mut any_alive = false;
-        for (i, name) in targets.iter().enumerate() {
-            if !session::exists(&ctx.tmux, name) {
-                continue;
+        for (i, target) in targets.iter().enumerate() {
+            if !target_exists(ctx, target) {
+                if matches!(target, IoTarget::Session { .. }) {
+                    continue;
+                }
+                ensure_target_exists(ctx, target);
             }
-            let pane_target = require_session_pane_target(&ctx.tmux, name);
-            let cur = match capture(&ctx.tmux, &pane_target, Some(window), false, false) {
+            ensure_origin_available(ctx, target);
+            let cur = match capture(&ctx.tmux, target.tmux_target(), Some(window), false, false) {
                 Ok(s) => s,
                 Err(_) => {
-                    require_session_pane_target(&ctx.tmux, name);
+                    ensure_origin_available(ctx, target);
+                    ensure_target_exists(ctx, target);
                     continue;
                 }
             };
@@ -731,11 +783,11 @@ pub fn tail(ctx: &Ctx, args: TailArgs) -> Result<()> {
             if !new.is_empty() {
                 let new = new.strip_prefix('\n').unwrap_or(new);
                 for line in new.lines() {
-                    println!("{}{line}", label(name));
+                    println!("{}{line}", label(target));
                 }
             }
             last[i] = cur;
-            if !pane_dead(&ctx.tmux, &pane_target) {
+            if !pane_dead(&ctx.tmux, target.tmux_target()) {
                 any_alive = true;
             }
         }

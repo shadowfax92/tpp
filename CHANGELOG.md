@@ -30,6 +30,9 @@ agents.
   Includes `new --no-watch`, `new --parent-pane`, `run --watch`, and `watch run|ls|stop`.
 - **Sfmux pane targets:** `bind`, `targets`, and `unbind` name arbitrary tmux panes through pane
   user-options, and `send`, `paste`, `cat`, and `wait` accept `pane:<name>`.
+- **Session family bridge:** the reserved `parent` target lets `send`, `paste`, `cat`, `tail`,
+  and `wait` reach the pane that spawned the caller, while `children` lists sessions spawned
+  from the current, explicit, or session-origin pane using existing tmux user-options only.
 - **tmux-compat verbs** (`has-session`, `new-session`, `attach-session`, `kill-session`,
   `list-sessions`, `set-buffer`, `paste-buffer`, `send-keys`, `capture-pane`, `x`) so `tpp` is a
   drop-in for `rmux` in `sf-auto-mux` after `s/rmux/tpp/`.
