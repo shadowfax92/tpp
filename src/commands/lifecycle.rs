@@ -1,23 +1,179 @@
-//! Session lifecycle: `run`, `new`, `ls`, `attach`, `rm`, `exit`, `clear`, `has`, `rename`.
+//! Session lifecycle: `run`, `new`, `name`, `ls`, `attach`, `rm`, `exit`, `clear`, `has`,
+//! `rename`.
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::mem::MaybeUninit;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::cli::{
-    AttachArgs, ExitArgs, HasArgs, LsArgs, NewArgs, ReapArgs, RenameArgs, RmArgs, RunArgs,
+    AttachArgs, ExitArgs, HasArgs, LsArgs, NameArgs, NewArgs, ReapArgs, RenameArgs, RmArgs, RunArgs,
 };
 use crate::commands::io::{record_session, run_wait};
 use crate::commands::{
     code, current_session, die, no_such_session, no_such_session_message, select, Ctx,
 };
-use crate::config::{parse_duration, DurationCfg};
+use crate::config::{parse_duration, Config, DurationCfg};
 use crate::output::{paint, print_json, Style};
 use crate::session::{self, now_epoch, NewOpts};
 use crate::store::Store;
 use crate::tmux::exact;
 use crate::watch;
+
+const ADJECTIVES: &[&str] = &[
+    "bouncy",
+    "brassy",
+    "breezy",
+    "bright",
+    "brisk",
+    "bubbly",
+    "cheery",
+    "chirpy",
+    "cozy",
+    "cuddly",
+    "curious",
+    "dainty",
+    "dapper",
+    "daring",
+    "dizzy",
+    "dreamy",
+    "fancy",
+    "feisty",
+    "fizzy",
+    "fluffy",
+    "frolicsome",
+    "fuzzy",
+    "gentle",
+    "giddy",
+    "gleeful",
+    "glitzy",
+    "goofy",
+    "happy",
+    "hasty",
+    "jaunty",
+    "jazzy",
+    "jolly",
+    "keen",
+    "lively",
+    "loopy",
+    "lucky",
+    "mellow",
+    "merry",
+    "mighty",
+    "nimble",
+    "nifty",
+    "peppy",
+    "perky",
+    "playful",
+    "plucky",
+    "poky",
+    "pudgy",
+    "quick",
+    "quirky",
+    "rosy",
+    "sassy",
+    "silky",
+    "sleepy",
+    "snappy",
+    "snazzy",
+    "sparkly",
+    "spiffy",
+    "spry",
+    "sunny",
+    "sweet",
+    "tiny",
+    "toasty",
+    "trusty",
+    "twinkly",
+    "upbeat",
+    "vivid",
+    "warm",
+    "wiggly",
+    "wonky",
+    "zany",
+    "zesty",
+];
+
+const ANIMALS: &[&str] = &[
+    "alpaca",
+    "axolotl",
+    "badger",
+    "bat",
+    "beagle",
+    "beaver",
+    "bison",
+    "bobcat",
+    "bunny",
+    "capybara",
+    "caribou",
+    "cat",
+    "chinchilla",
+    "chipmunk",
+    "corgi",
+    "coyote",
+    "crab",
+    "deer",
+    "dingo",
+    "dolphin",
+    "donkey",
+    "dormouse",
+    "duck",
+    "echidna",
+    "ferret",
+    "finch",
+    "fox",
+    "gecko",
+    "gerbil",
+    "goat",
+    "goose",
+    "hedgehog",
+    "heron",
+    "hippo",
+    "husky",
+    "ibex",
+    "koala",
+    "lemur",
+    "llama",
+    "loon",
+    "lynx",
+    "marmot",
+    "meerkat",
+    "mole",
+    "moose",
+    "mouse",
+    "narwhal",
+    "newt",
+    "octopus",
+    "opossum",
+    "otter",
+    "owl",
+    "panda",
+    "pangolin",
+    "penguin",
+    "pika",
+    "pony",
+    "puffin",
+    "quokka",
+    "rabbit",
+    "raccoon",
+    "seal",
+    "shrew",
+    "skunk",
+    "sloth",
+    "stoat",
+    "swan",
+    "tapir",
+    "tiger",
+    "turtle",
+    "wallaby",
+    "weasel",
+    "wombat",
+    "yak",
+];
+
+const PETNAME_RANDOM_ATTEMPTS: usize = 8;
 
 fn cwd_string() -> Option<String> {
     std::env::current_dir()
@@ -25,53 +181,110 @@ fn cwd_string() -> Option<String> {
         .map(|p| p.to_string_lossy().into_owned())
 }
 
-/// Turn a command/dir into a tmux-safe session slug.
-fn slug(s: &str) -> String {
-    let mut out = String::new();
-    let mut prev_dash = false;
-    for c in s.chars() {
-        if c.is_ascii_alphanumeric() || c == '_' || c == '.' {
-            out.push(c);
-            prev_dash = false;
-        } else if !prev_dash {
-            out.push('-');
-            prev_dash = true;
-        }
+struct PetnameRng(u64);
+
+impl PetnameRng {
+    fn from_entropy() -> Self {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let folded = nanos as u64 ^ (nanos >> 64) as u64;
+        let seed = folded ^ (u64::from(std::process::id()).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+        Self(if seed == 0 {
+            0xa076_1d64_78bd_642f
+        } else {
+            seed
+        })
     }
-    let trimmed = out.trim_matches('-').to_string();
-    if trimmed.is_empty() {
-        "tpp".to_string()
-    } else {
-        trimmed
+
+    #[cfg(test)]
+    fn new(seed: u64) -> Self {
+        Self(seed.max(1))
+    }
+
+    fn index(&mut self, len: usize) -> usize {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0 as usize % len
     }
 }
 
+fn local_mmdd() -> String {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0) as libc::time_t;
+    let mut local = MaybeUninit::<libc::tm>::uninit();
+    // SAFETY: localtime_r writes one `tm` value to the valid pointer when it succeeds.
+    let result = unsafe { libc::localtime_r(&seconds, local.as_mut_ptr()) };
+    if result.is_null() {
+        return "0101".to_string();
+    }
+    // SAFETY: a non-null return from localtime_r means the output value was initialized.
+    let local = unsafe { local.assume_init() };
+    format!("{:02}{:02}", local.tm_mon + 1, local.tm_mday)
+}
+
+fn random_petname(rng: &mut PetnameRng, date: &str) -> String {
+    format!(
+        "{}-{}-{date}",
+        ADJECTIVES[rng.index(ADJECTIVES.len())],
+        ANIMALS[rng.index(ANIMALS.len())]
+    )
+}
+
 /// Pick an unused session name from a base, appending -2, -3, … on collision.
-fn unique_name(ctx: &Ctx, base: &str) -> String {
-    let base = session::prefixed_name(&ctx.cfg, base);
-    if !session::exists(&ctx.tmux, &base) {
+fn unique_name_with(
+    cfg: &Config,
+    base: &str,
+    unavailable: &mut impl FnMut(&str) -> bool,
+) -> String {
+    let base = session::prefixed_name(cfg, base);
+    if !unavailable(&base) {
         return base;
     }
     for n in 2.. {
         let candidate = format!("{base}-{n}");
-        if !session::exists(&ctx.tmux, &candidate) {
+        if !unavailable(&candidate) {
             return candidate;
         }
     }
     unreachable!()
 }
 
-fn auto_name_for_command(ctx: &Ctx, command: &[String]) -> String {
-    let base = command
-        .first()
-        .map(|c| {
-            Path::new(c)
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or(c)
-        })
-        .unwrap_or("shell");
-    unique_name(ctx, &slug(base))
+fn unique_petname_with(
+    cfg: &Config,
+    mut candidate: impl FnMut() -> String,
+    unavailable: &mut impl FnMut(&str) -> bool,
+) -> String {
+    let mut last_base = None;
+    for _ in 0..PETNAME_RANDOM_ATTEMPTS {
+        let base = candidate();
+        let name = session::prefixed_name(cfg, &base);
+        if !unavailable(&name) {
+            return name;
+        }
+        last_base = Some(base);
+    }
+    unique_name_with(
+        cfg,
+        last_base
+            .as_deref()
+            .expect("petname candidate attempts are nonzero"),
+        unavailable,
+    )
+}
+
+fn fresh_petname(
+    ctx: &Ctx,
+    rng: &mut PetnameRng,
+    date: &str,
+    reserved: &HashSet<String>,
+) -> String {
+    let mut unavailable = |name: &str| reserved.contains(name) || session::exists(&ctx.tmux, name);
+    unique_petname_with(&ctx.cfg, || random_petname(rng, date), &mut unavailable)
 }
 
 fn caller_parent_pane(ctx: &Ctx, explicit: Option<&str>) -> Result<Option<String>> {
@@ -112,7 +325,12 @@ pub fn run(ctx: &Ctx, args: RunArgs) -> Result<()> {
             }
             name
         }
-        None => auto_name_for_command(ctx, &args.command),
+        None => fresh_petname(
+            ctx,
+            &mut PetnameRng::from_entropy(),
+            &local_mmdd(),
+            &HashSet::new(),
+        ),
     };
 
     if args.watch {
@@ -170,13 +388,12 @@ pub fn run(ctx: &Ctx, args: RunArgs) -> Result<()> {
 pub fn new(ctx: &Ctx, args: NewArgs) -> Result<()> {
     let name = match &args.name {
         Some(n) => session::prefixed_name(&ctx.cfg, n),
-        None => {
-            let base = cwd_string()
-                .as_deref()
-                .and_then(|d| Path::new(d).file_name().and_then(|s| s.to_str()).map(slug))
-                .unwrap_or_else(|| "tpp".to_string());
-            unique_name(ctx, &base)
-        }
+        None => fresh_petname(
+            ctx,
+            &mut PetnameRng::from_entropy(),
+            &local_mmdd(),
+            &HashSet::new(),
+        ),
     };
 
     if session::exists(&ctx.tmux, &name) {
@@ -227,6 +444,18 @@ pub fn new(ctx: &Ctx, args: NewArgs) -> Result<()> {
     println!("{name}");
     if !ctx.quiet {
         eprintln!("created {name}  (attach: tpp attach {name})");
+    }
+    Ok(())
+}
+
+pub fn name(ctx: &Ctx, args: NameArgs) -> Result<()> {
+    let mut rng = PetnameRng::from_entropy();
+    let date = local_mmdd();
+    let mut reserved = HashSet::with_capacity(args.count);
+    for _ in 0..args.count {
+        let name = fresh_petname(ctx, &mut rng, &date, &reserved);
+        println!("{name}");
+        reserved.insert(name);
     }
     Ok(())
 }
@@ -678,16 +907,39 @@ pub fn rename(ctx: &Ctx, args: RenameArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{humanize_age, select_reap_candidates, slug};
-    use crate::config::DurationCfg;
+    use regex::Regex;
+
+    use super::{
+        humanize_age, random_petname, select_reap_candidates, unique_petname_with, PetnameRng,
+        ADJECTIVES, ANIMALS,
+    };
+    use crate::config::{Config, DurationCfg};
     use crate::session::SessionInfo;
 
     #[test]
-    fn slug_sanitizes() {
-        assert_eq!(slug("npm test"), "npm-test");
-        assert_eq!(slug("/usr/bin/bash"), "usr-bin-bash");
-        assert_eq!(slug("feat/build-x"), "feat-build-x");
-        assert_eq!(slug("!!!"), "tpp");
+    fn petname_has_expected_format_and_baked_wordlists() {
+        assert!(ADJECTIVES.len() >= 64);
+        assert!(ANIMALS.len() >= 64);
+        assert!(ADJECTIVES
+            .iter()
+            .chain(ANIMALS.iter())
+            .all(|word| !word.is_empty()
+                && word
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() && byte.is_ascii_alphabetic())));
+
+        let name = random_petname(&mut PetnameRng::new(42), "0730");
+        assert!(Regex::new(r"^[a-z]+-[a-z]+-0730$").unwrap().is_match(&name));
+    }
+
+    #[test]
+    fn petname_collisions_fall_back_to_numeric_suffixes() {
+        let cfg = Config::default();
+        let mut unavailable =
+            |name: &str| matches!(name, "tpp/snazzy-otter-0730" | "tpp/snazzy-otter-0730-2");
+        let name = unique_petname_with(&cfg, || "snazzy-otter-0730".to_string(), &mut unavailable);
+
+        assert_eq!(name, "tpp/snazzy-otter-0730-3");
     }
 
     #[test]

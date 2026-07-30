@@ -9,8 +9,11 @@ First release. `tpp` (tmux++) is an ergonomic wrapper around the `tmux` binary f
 agents.
 
 ### Added
-- **Sessions:** `run` (`r`), `new` (`n`), `ls` (`l`/`list`), `attach` (`a`), `rm`
+- **Sessions:** `run` (`r`), `new` (`n`), `name`, `ls` (`l`/`list`), `attach` (`a`), `rm`
   (`kill`/`remove`), `exit` (`e`/`quit`), `rename`, `has`, `clear` (`clr`).
+- **Petname auto-naming:** unnamed `new` and `run` sessions use memorable
+  `<adjective>-<animal>-<mmdd>` names; `name -n N` pre-mints unused, mutually unique names
+  for scripts without creating sessions.
 - **Output:** `cat` (`cap`/`capture`), `tail` (`follow`), `wait` — with `--json` and replay of
   recorded exited sessions.
 - **Input:** `send` (`s`) and `paste` — literal text, `--file`/`--stdin`, `--keys`, and

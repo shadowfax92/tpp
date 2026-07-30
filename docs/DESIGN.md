@@ -39,6 +39,10 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
   `@tpp_cmd`, `@tpp_created`, `@tpp_origin_pane`. No external index needed for discovery
   or pane targeting — tmux is the source of truth. `ls` reads session metadata back with
   a single `list-sessions -F` call.
+- **Names** default to memorable `<adjective>-<animal>-<mmdd>` petnames for both `new` and
+  `run`; command meaning stays in `@tpp_cmd`. Random retries avoid occupied combinations
+  before numeric `-N` suffixing. `name` pre-mints one or more unused names without creating
+  sessions, and explicit `-s` names remain unchanged.
 - **remain-on-exit** is set on every `tpp` session so a finished command leaves its output
   on screen (so `cat`/`tail` still work) instead of vanishing.
 - **Root-pane liveness** is the process state of `@tpp_origin_pane`, not session existence.
@@ -83,7 +87,7 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
 
 ## Command surface
 
-Ergonomic (primary): `run`(r) · `new`(n) · `ls`(l,list) · `attach`(a) · `send`(s) ·
+Ergonomic (primary): `run`(r) · `new`(n) · `name` · `ls`(l,list) · `attach`(a) · `send`(s) ·
 `paste` · `bind` · `targets` · `unbind` · `cat`(cap,capture) · `tail`(follow) · `wait` · `watch` ·
 `rm`(kill,remove) · `reap` · `exit`(e,quit) · `clear`(clr) · `has` · `rename` · `config` · `init` ·
 `doctor` · `completions`.
@@ -96,7 +100,7 @@ flags the scripts use onto the same internals (or forward straight to `tmux`).
 ## Agent ergonomics
 
 - `--json` on `ls`, `cat`, `wait`, `run --wait`.
-- `run` prints **only** the session name to stdout; everything else goes to stderr.
+- `run` and `name` print **only** session names to stdout; everything else goes to stderr.
 - Stable exit codes: `0` ok · `2` usage · `3` not found · `4` timeout · `5` unsent paste ·
   `1` other; `has --alive` uses `1` for exists-but-dead.
 - `-q/--quiet`, idempotent `new -A` (no-op/attach if exists), `has` is exit-code-only.

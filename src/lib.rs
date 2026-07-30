@@ -52,6 +52,7 @@ pub fn run() -> Result<()> {
     match cmd {
         Cmd::Run(a) => lifecycle::run(&ctx, a),
         Cmd::New(a) => lifecycle::new(&ctx, a),
+        Cmd::Name(a) => lifecycle::name(&ctx, a),
         Cmd::Watch(a) => match a.action {
             WatchCommand::Run(a) => watch::run_foreground(&ctx, a),
             WatchCommand::Ls => watch::list_watchers(&ctx),
