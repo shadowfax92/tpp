@@ -4,7 +4,7 @@ use anyhow::Result;
 use serde::Serialize;
 
 use crate::cli::ChildrenArgs;
-use crate::commands::{code, die, no_such_session, require_session_pane_target, Ctx};
+use crate::commands::{code, die, no_such_session, Ctx};
 use crate::output::{paint, print_json, Style};
 use crate::session::{self, now_epoch};
 use crate::tmux::Tmux;
@@ -92,9 +92,12 @@ fn query_pane(ctx: &Ctx, args: &ChildrenArgs) -> String {
         if !session::exists(&ctx.tmux, &name) {
             no_such_session(&name);
         }
-        let origin = require_session_pane_target(&ctx.tmux, &name);
-        return canonical_pane(&ctx.tmux, &origin)
-            .unwrap_or_else(|| die(code::NOT_FOUND, format!("origin pane gone for {name}")));
+        return session::origin_pane(&ctx.tmux, &name).unwrap_or_else(|| {
+            die(
+                code::NOT_FOUND,
+                format!("no origin pane recorded for {name}"),
+            )
+        });
     }
 
     let caller = caller_pane_from_env(

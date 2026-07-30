@@ -1577,6 +1577,12 @@ fn children_filters_stamped_sessions_for_current_pane_explicit_pane_and_session(
         &child_a1,
         &["new", "--no-watch", "-s", "grandchild", "--", "sh"],
     ));
+    assert_success(&run_tmux(
+        &server,
+        &["new-window", "-d", "-t", "tpp/child-a1", "sh"],
+    ));
+    assert_success(&run_tmux(&server, &["kill-pane", "-t", &child_a1]));
+    assert_success(&run_tmux(&server, &["has-session", "-t", "tpp/child-a1"]));
     let by_session = run_tpp(&server, tmp.path(), &["-q", "children", "-t", "child-a1"]);
     assert_success(&by_session);
     assert_eq!(
