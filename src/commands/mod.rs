@@ -134,7 +134,27 @@ pub fn capture(
             args.push(format!("-{n}"));
         }
     }
-    tmux.run(args)
+    tmux.run(args).map(|raw| strip_dead_pane_overlay(&raw))
+}
+
+/// Drop tmux's dead-pane chrome when it is the capture's final non-blank line.
+///
+/// tmux (observed on 3.6a) writes "Pane is dead (status …)" into the bottom visible row of
+/// a remain-on-exit pane, leaving a blank gulf between real output and the overlay, so
+/// trailing-blank trims can never reach the content above it.
+fn strip_dead_pane_overlay(s: &str) -> String {
+    let lines: Vec<&str> = s.lines().collect();
+    let Some(last_content) = lines.iter().rposition(|l| !l.trim().is_empty()) else {
+        return s.to_string();
+    };
+    let stripped = io::strip_ansi(lines[last_content]);
+    let trimmed = stripped.trim();
+    let is_overlay = trimmed == "Pane is dead"
+        || (trimmed.starts_with("Pane is dead (") && trimmed.ends_with(')'));
+    if !is_overlay {
+        return s.to_string();
+    }
+    lines[..last_content].join("\n")
 }
 
 /// Keep only the last `n` lines of `s` (no-op when `n == 0`).
@@ -201,7 +221,7 @@ pub fn find_session(tmux: &Tmux, name: &str) -> Option<SessionInfo> {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{resolve_one_target, Ctx};
+    use super::{resolve_one_target, strip_dead_pane_overlay, Ctx};
     use crate::config::Config;
     use crate::paths::Paths;
     use crate::tmux::Tmux;
@@ -229,6 +249,30 @@ mod tests {
             resolve_one_target(&ctx_with_prefix("tpp/"), Some("api")),
             "tpp/api"
         );
+    }
+
+    #[test]
+    fn dead_overlay_stripped_when_final_non_blank_line() {
+        let capture = "output line\n\n\n\nPane is dead (status 127, Thu Jul 30 13:26:49 2026)";
+        assert_eq!(strip_dead_pane_overlay(capture), "output line\n\n\n");
+        let bare = "output line\n\nPane is dead";
+        assert_eq!(strip_dead_pane_overlay(bare), "output line\n");
+    }
+
+    #[test]
+    fn dead_overlay_stripped_despite_ansi_styling() {
+        let capture = "output line\n\n\u{1b}[7mPane is dead (status 0, now)\u{1b}[0m";
+        assert_eq!(strip_dead_pane_overlay(capture), "output line\n");
+    }
+
+    #[test]
+    fn dead_overlay_kept_when_content_follows_or_shape_differs() {
+        let mid = "Pane is dead (status 1, then)\nreal output after";
+        assert_eq!(strip_dead_pane_overlay(mid), mid);
+        let similar = "output\nPane is dead maybe";
+        assert_eq!(strip_dead_pane_overlay(similar), similar);
+        let empty = "\n\n";
+        assert_eq!(strip_dead_pane_overlay(empty), empty);
     }
 
     #[test]

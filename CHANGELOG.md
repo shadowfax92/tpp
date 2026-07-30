@@ -42,3 +42,8 @@ agents.
 - **Config** at `~/.config/tpp/config.toml`; socket-namespaced recorded transcripts under
   `~/.tpp/data/`. `init`, `config`, `doctor`, `completions`.
 - `remain-on-exit` on tpp sessions so finished commands keep their output for `cat`/`tail`.
+
+### Fixed
+- Pane captures (`cat`, `tail`, `wait`, verification) no longer include tmux's dead-pane
+  chrome: a trailing "Pane is dead (status …)" overlay row is stripped so real output stays
+  reachable behind the blank screen padding above it.
