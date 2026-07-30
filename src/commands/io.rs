@@ -753,7 +753,7 @@ pub fn tail(ctx: &Ctx, args: TailArgs) -> Result<()> {
                 String::new()
             });
         if initial > 0 {
-            let shown = trim_trailing_blank(&last_lines(&snap, initial as usize));
+            let shown = last_lines(&trim_trailing_blank(&snap), initial as usize);
             for line in shown.lines() {
                 println!("{}{line}", label(target));
             }
