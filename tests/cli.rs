@@ -2994,18 +2994,11 @@ fn mail_send_read_reply_unread_and_no_ping_flow() {
     let stdin_mail = run_tpp_stdin(
         &server,
         tmp.path(),
-        &[
-            "mail",
-            "send",
-            "recipient",
-            "--stdin",
-            "--no-ping",
-        ],
+        &["mail", "send", "recipient", "--stdin", "--no-ping"],
         "body from stdin",
     );
     assert_success(&stdin_mail);
-    let stdin_path =
-        std::path::PathBuf::from(String::from_utf8_lossy(&stdin_mail.stdout).trim());
+    let stdin_path = std::path::PathBuf::from(String::from_utf8_lossy(&stdin_mail.stdout).trim());
     assert!(std::fs::read_to_string(stdin_path)
         .unwrap()
         .ends_with("body from stdin"));
@@ -3104,6 +3097,14 @@ fn mail_exit_codes_and_ping_failure_preserve_written_mail() {
     );
     let path = std::path::PathBuf::from(String::from_utf8_lossy(&sent.stdout).trim());
     assert!(path.exists());
+
+    std::fs::write(&path, "not a valid mail message").unwrap();
+    let corrupt_read = run_tpp(&server, tmp.path(), &["mail", "read", "m1", "-t", "worker"]);
+    assert_exit_code(&corrupt_read, 1);
+    assert!(String::from_utf8_lossy(&corrupt_read.stderr).contains("parsing"));
+    let corrupt_list = run_tpp(&server, tmp.path(), &["mail", "ls", "-t", "worker"]);
+    assert_exit_code(&corrupt_list, 1);
+    assert!(String::from_utf8_lossy(&corrupt_list.stderr).contains("parsing"));
 }
 
 #[test]
@@ -3163,6 +3164,81 @@ fn mail_mailbox_moves_on_rename_archives_on_remove_and_resets_on_reuse() {
     assert!(String::from_utf8_lossy(&sent.stdout)
         .trim()
         .ends_with("inbox/m1.md"));
+}
+
+#[test]
+fn concurrent_mail_processes_allocate_unique_ids_and_list_sent_copies() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    assert_success(&run_tpp(&server, tmp.path(), &["new", "-s", "sender"]));
+    assert_success(&run_tpp(&server, tmp.path(), &["new", "-s", "recipient"]));
+    let sender_pane = pane_id(&server, "tpp/sender");
+    let mut children = Vec::new();
+    for index in 0..8 {
+        let child = Command::new(env!("CARGO_BIN_EXE_tpp"))
+            .arg("-L")
+            .arg(&server.socket)
+            .args([
+                "mail",
+                "recipient",
+                "-m",
+                &format!("concurrent {index}"),
+                "--no-ping",
+            ])
+            .env("TPP_CONFIG_DIR", tmp.path().join("config"))
+            .env("TPP_STATE_DIR", tmp.path().join("state"))
+            .env("TMUX", "tpp-test")
+            .env("TMUX_PANE", &sender_pane)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        children.push(child);
+    }
+
+    let mut ids = HashSet::new();
+    for child in children {
+        let output = child.wait_with_output().unwrap();
+        assert_success(&output);
+        let path = std::path::PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+        ids.insert(
+            path.file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap()
+                .to_string(),
+        );
+    }
+    assert_eq!(ids.len(), 8);
+
+    let sender_list =
+        run_tpp_from_pane(&server, tmp.path(), &sender_pane, &["mail", "ls", "--json"]);
+    assert_success(&sender_list);
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&sender_list.stdout).unwrap();
+    assert_eq!(rows.len(), 8);
+    assert!(rows.iter().all(|row| row["folder"] == "sent"));
+}
+
+#[test]
+fn rm_keeps_the_session_and_exits_nonzero_when_mail_archive_fails() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    assert_success(&run_tpp(&server, tmp.path(), &["new", "-s", "worker"]));
+    let seq_files = files_named(&tmp.path().join("state").join("mail"), "seq");
+    assert_eq!(seq_files.len(), 1, "{seq_files:?}");
+    std::fs::create_dir(seq_files[0].parent().unwrap().join(".exited_at")).unwrap();
+
+    let removed = run_tpp(&server, tmp.path(), &["rm", "worker"]);
+    assert_exit_code(&removed, 1);
+    assert!(String::from_utf8_lossy(&removed.stderr).contains("failed to remove"));
+    assert_success(&run_tpp(&server, tmp.path(), &["has", "worker"]));
 }
 
 #[test]

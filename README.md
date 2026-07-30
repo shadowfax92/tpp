@@ -82,7 +82,7 @@ Run `tpp <cmd> --help` for full flags. Aliases in parentheses.
 | `watch` | Control per-session watchers: `run -t NAME` (foreground/internal), `ls`, and `stop -t NAME`. |
 | `ls` (`l`, `list`) | List all tpp sessions. Sessions with unread mail show `mail:N`; `--json` includes numeric `mail_unread` plus `state`, `pane_dead`, root `pid`, and `exit_status`; `-q` names-only; `--exited` includes recorded ones. |
 | `children` | List sessions spawned from the current pane. `--pane %N` queries a pane, `-t SESSION` queries a session's startup pane, `--json` is machine-readable, and `-q` prints names only. |
-| `mail` | Send durable mail with `mail TARGET` or `mail send TARGET`; `mail ls` lists an inbox and `mail read ID` prints and marks a message read. Supports `-m`, `--file`, `--stdin`, `--subject`, and `--no-ping`. |
+| `mail` | Send durable mail with `mail TARGET` or `mail send TARGET`; `mail ls` lists inbox and sent copies, while `mail read ID` prints and marks an inbox message read. Supports `-m`, `--file`, `--stdin`, `--subject`, and `--no-ping`. |
 | `reply` | Reply to an id in the caller's inbox, preserving the thread with `In-Reply-To`. |
 | `attach` (`a`) | Attach, or `switch-client` if you're already inside tmux. |
 | `rm` (`kill`) | Kill sessions. `--all` removes every tpp session, `--record` saves output first. |

@@ -8,7 +8,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 use serde::Serialize;
 
@@ -40,10 +40,29 @@ impl Mailbox {
 
     fn dir(&self, root: &Path) -> PathBuf {
         match self {
-            Self::Session(name) => root.join(encode_state_component(name)),
+            Self::Session(name) => root.join(session_component(name)),
             Self::Pane(pane) => root.join("panes").join(encode_state_component(pane)),
             Self::Local => root.join("panes").join("local"),
         }
+    }
+}
+
+fn session_component(name: &str) -> String {
+    let encoded = encode_state_component(name);
+    if encoded.is_empty() || matches!(encoded.as_str(), "." | ".." | "panes") {
+        format!("%00{encoded}")
+    } else {
+        encoded
+    }
+}
+
+fn absolute_path(path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
     }
 }
 
@@ -185,9 +204,17 @@ pub(crate) struct MailStore {
 impl MailStore {
     pub(crate) fn new(paths: &Paths, socket: Option<&str>) -> Self {
         Self {
-            root: paths.socket_state_dir("mail", socket),
-            archive_root: Store::new(paths, socket).mail_archive_dir(),
+            root: absolute_path(paths.socket_state_dir("mail", socket)),
+            archive_root: absolute_path(Store::new(paths, socket).mail_archive_dir()),
         }
+    }
+
+    fn validate_send_root(&self) -> Result<()> {
+        let display = self.root.to_string_lossy();
+        if display.chars().any(char::is_control) {
+            bail!("mail state path contains a control character");
+        }
+        Ok(())
     }
 
     fn mailbox_dir(&self, mailbox: &Mailbox) -> PathBuf {
@@ -255,17 +282,29 @@ impl MailStore {
         let local_id = self.next_id(mailbox)?;
         message.id = format!("{local_id}@{}", mailbox.address());
         let path = dir.join(folder.name()).join(format!("{local_id}.md"));
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .mode(0o600)
-            .open(&path)
-            .with_context(|| format!("creating {}", path.display()))?;
-        file.write_all(message.render().as_bytes())
-            .with_context(|| format!("writing {}", path.display()))?;
-        file.sync_all()
-            .with_context(|| format!("syncing {}", path.display()))?;
+        atomic_write_new(&path, message.render().as_bytes())?;
         Ok((path, message))
+    }
+
+    fn write_dual(
+        &self,
+        sender: &Mailbox,
+        recipient: &Mailbox,
+        message: Message,
+    ) -> Result<(PathBuf, Message)> {
+        let (sent_path, _) = self.write_copy(sender, Folder::Sent, message.clone())?;
+        match self.write_copy(recipient, Folder::Inbox, message) {
+            Ok(delivered) => Ok(delivered),
+            Err(delivery_err) => match std::fs::remove_file(&sent_path) {
+                Ok(()) => Err(delivery_err
+                    .context("recipient write failed; rolled back the sender's sent copy")),
+                Err(rollback_err) => Err(anyhow!(
+                    "recipient write failed: {delivery_err:#}; rolling back {} also failed: \
+                     {rollback_err}",
+                    sent_path.display()
+                )),
+            },
+        }
     }
 
     fn inbox_path(&self, mailbox: &Mailbox, id: &str) -> Option<PathBuf> {
@@ -319,16 +358,21 @@ impl MailStore {
                 return Err(err).with_context(|| format!("reading {}", inbox.display()));
             }
         };
-        Ok(entries
-            .filter_map(Result::ok)
-            .filter_map(|entry| {
-                let path = entry.path();
-                (path.extension() == Some(OsStr::new("md")))
-                    .then(|| path.file_stem()?.to_str().map(str::to_string))
-                    .flatten()
-            })
-            .filter(|id| self.is_unread(mailbox, id))
-            .count())
+        let mut unread = 0;
+        for entry in entries {
+            let entry = entry.with_context(|| format!("reading {}", inbox.display()))?;
+            let path = entry.path();
+            if path.extension() != Some(OsStr::new("md")) {
+                continue;
+            }
+            let Some(id) = path.file_stem().and_then(OsStr::to_str) else {
+                continue;
+            };
+            if self.is_unread(mailbox, id) {
+                unread += 1;
+            }
+        }
+        Ok(unread)
     }
 
     pub(crate) fn reset_session(&self, name: &str) -> Result<()> {
@@ -363,23 +407,59 @@ impl MailStore {
         Ok(())
     }
 
-    pub(crate) fn archive_session(&self, name: &str, exited_at: i64) -> Result<()> {
+    pub(crate) fn archive_session(
+        &self,
+        name: &str,
+        exited_at: i64,
+    ) -> Result<Option<ArchivedMailbox>> {
         let live = self.mailbox_dir(&Mailbox::Session(name.to_string()));
         if !live.exists() {
-            return Ok(());
+            return Ok(None);
         }
         create_private_dir_all(&self.archive_root)?;
-        let archived = self.archive_root.join(encode_state_component(name));
-        remove_dir_if_present(&archived)?;
+        let marker = live.join(ARCHIVE_TIMESTAMP);
+        write_sync_replace(&marker, format!("{exited_at}\n").as_bytes())?;
+        let base = format!(
+            "{}.{exited_at}.{}",
+            session_component(name),
+            std::process::id()
+        );
+        let mut archived = self.archive_root.join(&base);
+        for suffix in 2.. {
+            if !archived.exists() {
+                break;
+            }
+            archived = self.archive_root.join(format!("{base}.{suffix}"));
+        }
         std::fs::rename(&live, &archived).with_context(|| {
+            let _ = std::fs::remove_file(&marker);
             format!(
                 "archiving mailbox {} to {}",
                 live.display(),
                 archived.display()
             )
         })?;
-        std::fs::write(archived.join(ARCHIVE_TIMESTAMP), format!("{exited_at}\n"))
-            .with_context(|| format!("stamping archived mailbox {}", archived.display()))?;
+        Ok(Some(ArchivedMailbox { live, archived }))
+    }
+
+    pub(crate) fn restore_archived(&self, archived: ArchivedMailbox) -> Result<()> {
+        if archived.live.exists() {
+            bail!(
+                "cannot restore archived mailbox because {} already exists",
+                archived.live.display()
+            );
+        }
+        if let Some(parent) = archived.live.parent() {
+            create_private_dir_all(parent)?;
+        }
+        std::fs::rename(&archived.archived, &archived.live).with_context(|| {
+            format!(
+                "restoring mailbox {} to {}",
+                archived.archived.display(),
+                archived.live.display()
+            )
+        })?;
+        let _ = std::fs::remove_file(archived.live.join(ARCHIVE_TIMESTAMP));
         Ok(())
     }
 
@@ -416,6 +496,71 @@ impl MailStore {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct ArchivedMailbox {
+    live: PathBuf,
+    archived: PathBuf,
+}
+
+fn atomic_write_new(path: &Path, contents: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .with_context(|| format!("{} has no parent directory", path.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .context("mail path is not valid UTF-8")?;
+    let base = format!(".{file_name}.{}.tmp", std::process::id());
+    let mut temp = parent.join(&base);
+    let mut file = None;
+    for suffix in 2.. {
+        match OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&temp)
+        {
+            Ok(opened) => {
+                file = Some(opened);
+                break;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                temp = parent.join(format!("{base}.{suffix}"));
+            }
+            Err(err) => {
+                return Err(err).with_context(|| format!("creating {}", temp.display()));
+            }
+        }
+    }
+    let mut file = file.context("could not allocate a temporary mail file")?;
+    let publish = (|| -> Result<()> {
+        file.write_all(contents)
+            .with_context(|| format!("writing {}", temp.display()))?;
+        file.sync_all()
+            .with_context(|| format!("syncing {}", temp.display()))?;
+        std::fs::rename(&temp, path)
+            .with_context(|| format!("publishing mail {} as {}", temp.display(), path.display()))
+    })();
+    if publish.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    publish
+}
+
+fn write_sync_replace(path: &Path, contents: &[u8]) -> Result<()> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    file.write_all(contents)
+        .with_context(|| format!("writing {}", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("syncing {}", path.display()))
+}
+
 fn remove_dir_if_present(path: &Path) -> Result<()> {
     match std::fs::remove_dir_all(path) {
         Ok(()) => Ok(()),
@@ -428,6 +573,27 @@ fn local_id(id: &str) -> Option<&str> {
     let id = id.split_once('@').map_or(id, |(local, _)| local);
     let digits = id.strip_prefix('m')?;
     (!digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())).then_some(id)
+}
+
+fn required_inbox(
+    store: &MailStore,
+    mailbox: &Mailbox,
+    id: &str,
+) -> Result<(PathBuf, String, Message)> {
+    if local_id(id).is_none() {
+        die(code::NOT_FOUND, format!("mail not found: {id}"));
+    }
+    match store.read_inbox(mailbox, id) {
+        Ok(message) => Ok(message),
+        Err(err)
+            if err
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            die(code::NOT_FOUND, format!("mail not found: {id}"));
+        }
+        Err(err) => Err(err),
+    }
 }
 
 fn caller_mailbox(ctx: &Ctx) -> Option<Mailbox> {
@@ -565,6 +731,7 @@ fn send_to(
 ) -> Result<PathBuf> {
     let socket = ctx.tmux.store_socket();
     let store = MailStore::new(&ctx.paths, socket.as_deref());
+    store.validate_send_root()?;
     let message = Message {
         from: sender.address(),
         to: recipient.address(),
@@ -575,9 +742,7 @@ fn send_to(
         body: outgoing.body,
     };
 
-    store.write_copy(&sender, Folder::Sent, message.clone())?;
-    let (inbox_path, inbox_message) =
-        store.write_copy(&recipient.mailbox, Folder::Inbox, message)?;
+    let (inbox_path, inbox_message) = store.write_dual(&sender, &recipient.mailbox, message)?;
 
     if !outgoing.no_ping {
         let id = local_id(&inbox_message.id).unwrap_or(&inbox_message.id);
@@ -659,9 +824,7 @@ pub fn reply(ctx: &Ctx, args: ReplyArgs) -> Result<()> {
     let sender = own_mailbox(ctx);
     let socket = ctx.tmux.store_socket();
     let store = MailStore::new(&ctx.paths, socket.as_deref());
-    let (_, _, original) = store
-        .read_inbox(&sender, &args.id)
-        .unwrap_or_else(|_| die(code::NOT_FOUND, format!("mail not found: {}", args.id)));
+    let (_, _, original) = required_inbox(&store, &sender, &args.id)?;
     let recipient = resolve_reply_target(ctx, &original.from);
     let body = read_body(args.message.as_deref(), args.file.as_deref(), args.stdin)?;
     send_to(
@@ -682,6 +845,7 @@ pub fn reply(ctx: &Ctx, args: ReplyArgs) -> Result<()> {
 #[derive(Debug, Serialize)]
 struct MailListRow {
     id: String,
+    folder: String,
     unread: bool,
     from: String,
     to: String,
@@ -694,15 +858,16 @@ fn list(ctx: &Ctx, args: MailLsArgs) -> Result<()> {
     let mailbox = selected_mailbox(ctx, args.target.as_deref());
     let socket = ctx.tmux.store_socket();
     let store = MailStore::new(&ctx.paths, socket.as_deref());
-    let inbox = store.mailbox_dir(&mailbox).join("inbox");
     let mut rows = Vec::new();
-    let entries = match std::fs::read_dir(&inbox) {
-        Ok(entries) => Some(entries),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-        Err(err) => return Err(err).with_context(|| format!("reading {}", inbox.display())),
-    };
-    if let Some(entries) = entries {
-        for entry in entries.flatten() {
+    for folder in [Folder::Inbox, Folder::Sent] {
+        let dir = store.mailbox_dir(&mailbox).join(folder.name());
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(err).with_context(|| format!("reading {}", dir.display())),
+        };
+        for entry in entries {
+            let entry = entry.with_context(|| format!("reading {}", dir.display()))?;
             let path = entry.path();
             if path.extension() != Some(OsStr::new("md")) {
                 continue;
@@ -710,20 +875,17 @@ fn list(ctx: &Ctx, args: MailLsArgs) -> Result<()> {
             let Some(id) = path.file_stem().and_then(OsStr::to_str) else {
                 continue;
             };
-            let unread = store.is_unread(&mailbox, id);
+            let unread = matches!(folder, Folder::Inbox) && store.is_unread(&mailbox, id);
             if args.unread && !unread {
                 continue;
             }
-            let raw = match std::fs::read_to_string(&path) {
-                Ok(raw) => raw,
-                Err(_) => continue,
-            };
-            let message = match Message::parse(&raw) {
-                Ok(message) => message,
-                Err(_) => continue,
-            };
+            let raw = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading {}", path.display()))?;
+            let message =
+                Message::parse(&raw).with_context(|| format!("parsing {}", path.display()))?;
             rows.push(MailListRow {
                 id: id.to_string(),
+                folder: folder.name().to_string(),
                 unread,
                 from: message.from,
                 to: message.to,
@@ -749,7 +911,13 @@ fn list(ctx: &Ctx, args: MailLsArgs) -> Result<()> {
         return Ok(());
     }
     for row in rows {
-        let state = if row.unread { "unread" } else { "read" };
+        let state = if row.folder == "sent" {
+            "sent"
+        } else if row.unread {
+            "unread"
+        } else {
+            "read"
+        };
         let subject = row.subject.as_deref().unwrap_or("(no subject)");
         println!(
             "{}  {:<6}  {}  from {}  {}",
@@ -769,9 +937,7 @@ fn read(ctx: &Ctx, args: MailReadArgs) -> Result<()> {
     let mailbox = selected_mailbox(ctx, args.target.as_deref());
     let socket = ctx.tmux.store_socket();
     let store = MailStore::new(&ctx.paths, socket.as_deref());
-    let (path, raw, message) = store
-        .read_inbox(&mailbox, &args.id)
-        .unwrap_or_else(|_| die(code::NOT_FOUND, format!("mail not found: {}", args.id)));
+    let (path, raw, message) = required_inbox(&store, &mailbox, &args.id)?;
     store.mark_read(&mailbox, &args.id)?;
     if ctx.json || args.json {
         print_json(&MailReadOutput { path, message })
@@ -794,9 +960,14 @@ pub(crate) fn rename_session(ctx: &Ctx, old: &str, new: &str) -> Result<()> {
     MailStore::new(&ctx.paths, socket.as_deref()).rename_session(old, new)
 }
 
-pub(crate) fn archive_session(ctx: &Ctx, name: &str) -> Result<()> {
+pub(crate) fn archive_session(ctx: &Ctx, name: &str) -> Result<Option<ArchivedMailbox>> {
     let socket = ctx.tmux.store_socket();
     MailStore::new(&ctx.paths, socket.as_deref()).archive_session(name, session::now_epoch())
+}
+
+pub(crate) fn restore_session(ctx: &Ctx, archived: ArchivedMailbox) -> Result<()> {
+    let socket = ctx.tmux.store_socket();
+    MailStore::new(&ctx.paths, socket.as_deref()).restore_archived(archived)
 }
 
 pub(crate) fn is_reserved_verb(word: &str) -> bool {
@@ -872,6 +1043,73 @@ mod tests {
         assert_eq!(store.unread_count(&mailbox).unwrap(), 1);
         store.mark_read(&mailbox, &written.id).unwrap();
         assert_eq!(store.unread_count(&mailbox).unwrap(), 0);
+    }
+
+    #[test]
+    fn reserved_session_components_cannot_overlap_pane_mailboxes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MailStore::new(&paths(tmp.path()), None);
+        let pane = Mailbox::Pane("%7".to_string());
+        store.write_copy(&pane, Folder::Inbox, message()).unwrap();
+
+        for name in ["panes", ".", ".."] {
+            store.reset_session(name).unwrap();
+            assert_eq!(
+                store.unread_count(&pane).unwrap(),
+                1,
+                "resetting {name:?} damaged the pane namespace"
+            );
+        }
+        assert_ne!(
+            store.mailbox_dir(&Mailbox::Session("panes".to_string())),
+            store.root.join("panes")
+        );
+    }
+
+    #[test]
+    fn recipient_failure_rolls_back_the_sender_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MailStore::new(&paths(tmp.path()), None);
+        let sender = Mailbox::Session("tpp/sender".to_string());
+        let recipient = Mailbox::Session("tpp/recipient".to_string());
+        store.ensure_mailbox(&sender).unwrap();
+        std::fs::write(store.mailbox_dir(&recipient), "not a directory").unwrap();
+
+        let error = store
+            .write_dual(&sender, &recipient, message())
+            .unwrap_err();
+        assert!(error.to_string().contains("rolled back"));
+        let sent = store.mailbox_dir(&sender).join("sent");
+        assert!(std::fs::read_dir(sent)
+            .unwrap()
+            .all(|entry| entry.unwrap().path().extension() != Some(OsStr::new("md"))));
+    }
+
+    #[test]
+    fn mail_roots_are_absolute_and_control_characters_are_rejected() {
+        let relative = Paths {
+            config_dir: PathBuf::new(),
+            state_dir: PathBuf::from("relative-mail-state"),
+        };
+        assert!(MailStore::new(&relative, None).root.is_absolute());
+
+        let invalid = Paths {
+            config_dir: PathBuf::new(),
+            state_dir: PathBuf::from("mail\nstate"),
+        };
+        assert!(MailStore::new(&invalid, None).validate_send_root().is_err());
+    }
+
+    #[test]
+    fn archive_failure_leaves_the_live_mailbox_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MailStore::new(&paths(tmp.path()), None);
+        let mailbox = Mailbox::Session("tpp/worker".to_string());
+        store.reset_session("tpp/worker").unwrap();
+        std::fs::create_dir(store.mailbox_dir(&mailbox).join(ARCHIVE_TIMESTAMP)).unwrap();
+
+        assert!(store.archive_session("tpp/worker", 123).is_err());
+        assert!(store.mailbox_dir(&mailbox).exists());
     }
 
     #[test]

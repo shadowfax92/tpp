@@ -201,7 +201,7 @@ complete -c tpp -n "__fish_tpp_using_subcommand children" -s q -l quiet -d 'Supp
 complete -c tpp -n "__fish_tpp_using_subcommand children" -s h -l help -d 'Print help'
 complete -c tpp -n "__fish_tpp_using_subcommand children" -s V -l version -d 'Print version'
 complete -c tpp -n "__fish_tpp_using_subcommand mail; and not __fish_seen_subcommand_from send ls read" -f -a "send" -d 'Send mail using the unambiguous long form'
-complete -c tpp -n "__fish_tpp_using_subcommand mail; and not __fish_seen_subcommand_from send ls read" -f -a "ls" -d 'List inbox messages'
+complete -c tpp -n "__fish_tpp_using_subcommand mail; and not __fish_seen_subcommand_from send ls read" -f -a "ls" -d 'List inbox and sent messages'
 complete -c tpp -n "__fish_tpp_using_subcommand mail; and not __fish_seen_subcommand_from send ls read" -f -a "read" -d 'Read and mark one inbox message'
 complete -c tpp -n "__fish_tpp_using_subcommand mail; and not __fish_seen_subcommand_from send ls read" -f -a "parent" -d 'Send to the recorded parent pane or session'
 complete -c tpp -n "__fish_tpp_using_subcommand mail; and not __fish_seen_subcommand_from ls read" -s m -l message -d 'Use this text as the message body' -r

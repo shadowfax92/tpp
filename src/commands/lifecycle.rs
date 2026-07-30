@@ -367,9 +367,24 @@ pub fn run(ctx: &Ctx, args: RunArgs) -> Result<()> {
         if args.record {
             let _ = record_session(ctx, &name);
         }
-        let _ = ctx.tmux.run(["kill-session", "-t", &exact(&name)]);
-        if let Err(err) = mail::archive_session(ctx, &name) {
-            eprintln!("tpp: warning: failed to archive mailbox for {name}: {err}");
+        match mail::archive_session(ctx, &name) {
+            Ok(archived) => {
+                if let Err(err) = ctx.tmux.run(["kill-session", "-t", &exact(&name)]) {
+                    if let Some(archived) = archived {
+                        if let Err(restore_err) = mail::restore_session(ctx, archived) {
+                            eprintln!(
+                                "tpp: warning: failed to kill {name}: {err}; mailbox restore also \
+                                 failed: {restore_err}"
+                            );
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                eprintln!(
+                    "tpp: warning: failed to archive mailbox for {name}; session retained: {err}"
+                );
+            }
         }
         std::process::exit(status);
     }
@@ -498,9 +513,9 @@ pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
     let mail_socket = ctx.tmux.store_socket();
     let mail_store = mail::MailStore::new(&ctx.paths, mail_socket.as_deref());
 
-    let mut rows: Vec<LsRow> = live
-        .iter()
-        .map(|s| LsRow {
+    let mut rows = Vec::with_capacity(live.len());
+    for s in &live {
+        rows.push(LsRow {
             name: s.name.clone(),
             status: s.status().to_string(),
             state: s.state().to_string(),
@@ -510,9 +525,9 @@ pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
             pane_dead: Some(s.dead),
             pid: s.pid,
             exit_status: s.exit_status,
-            mail_unread: mail_store.unread_count_session(&s.name).unwrap_or(0),
-        })
-        .collect();
+            mail_unread: mail_store.unread_count_session(&s.name)?,
+        });
+    }
 
     let show_exited = args.exited || (!args.no_exited && ctx.cfg.ls.show_exited_hours > 0);
     if show_exited {
@@ -704,14 +719,21 @@ fn remove_session_with_lifecycle(ctx: &Ctx, name: &str, record: bool) -> Result<
         let _ = record_session(ctx, name);
     }
     let on_exit = session::prepare_on_exit_hook(&ctx.tmux, name);
+    let archived = mail::archive_session(ctx, name)?;
     if let Some(hook) = &on_exit {
         hook.disable_session_closed_hook(&ctx.tmux);
     }
-    ctx.tmux.run(["kill-session", "-t", &exact(name)])?;
+    if let Err(kill_err) = ctx.tmux.run(["kill-session", "-t", &exact(name)]) {
+        if let Some(archived) = archived {
+            mail::restore_session(ctx, archived).with_context(|| {
+                format!("kill failed for {name}: {kill_err}; restoring its mailbox")
+            })?;
+        }
+        return Err(kill_err.into());
+    }
     if let Some(hook) = on_exit {
         hook.fire(name);
     }
-    mail::archive_session(ctx, name)?;
     Ok(())
 }
 
@@ -824,6 +846,7 @@ pub fn rm(ctx: &Ctx, args: RmArgs) -> Result<()> {
 
     let mut removed = 0;
     let mut missing = false;
+    let mut failed = false;
     for name in &targets {
         if !session::exists(&ctx.tmux, name) {
             eprintln!("tpp: {}", no_such_session_message(name));
@@ -832,7 +855,10 @@ pub fn rm(ctx: &Ctx, args: RmArgs) -> Result<()> {
         }
         match remove_session_with_lifecycle(ctx, name, args.record) {
             Ok(_) => removed += 1,
-            Err(e) => eprintln!("tpp: failed to remove {name}: {e}"),
+            Err(e) => {
+                eprintln!("tpp: failed to remove {name}: {e}");
+                failed = true;
+            }
         }
     }
     if !ctx.quiet {
@@ -840,6 +866,9 @@ pub fn rm(ctx: &Ctx, args: RmArgs) -> Result<()> {
     }
     if missing {
         std::process::exit(code::NOT_FOUND);
+    }
+    if failed {
+        std::process::exit(1);
     }
     Ok(())
 }
