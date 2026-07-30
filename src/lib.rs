@@ -15,7 +15,7 @@ use anyhow::Result;
 use clap::Parser;
 
 use cli::{Cli, Cmd, LsArgs, WatchCommand};
-use commands::{compat, io, lifecycle, meta, pane, Ctx};
+use commands::{compat, family, io, lifecycle, meta, pane, Ctx};
 use config::Config;
 use paths::Paths;
 use store::Store;
@@ -60,6 +60,7 @@ pub fn run() -> Result<()> {
             WatchCommand::Stop(a) => watch::stop_watcher(&ctx, a),
         },
         Cmd::Ls(a) => lifecycle::ls(&ctx, a),
+        Cmd::Children(a) => family::children(&ctx, a),
         Cmd::Attach(a) => lifecycle::attach(&ctx, a),
         Cmd::Send(a) => io::send(&ctx, a),
         Cmd::Paste(a) => io::paste(&ctx, a),

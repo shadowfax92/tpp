@@ -53,6 +53,8 @@ pub struct SessionInfo {
     pub activity: i64,
     pub attached: bool,
     pub windows: u32,
+    /// Raw pane id of the process that created this session.
+    pub parent_pane: Option<String>,
     /// The command in the startup pane has exited (kept visible by remain-on-exit).
     pub dead: bool,
     pub pid: Option<u32>,
@@ -548,6 +550,7 @@ pub fn list(tmux: &Tmux) -> Result<Vec<SessionInfo>> {
         "#{session_attached}",
         "#{session_windows}",
         "#{@tpp_origin_pane}",
+        "#{@tpp_parent_pane}",
     ]
     .join(&SEP.to_string());
 
@@ -563,7 +566,7 @@ pub fn list(tmux: &Tmux) -> Result<Vec<SessionInfo>> {
             continue;
         }
         let f: Vec<&str> = line.split(SEP).collect();
-        if f.len() < 9 {
+        if f.len() < 10 {
             continue;
         }
         if f[1] != "1" {
@@ -588,6 +591,7 @@ pub fn list(tmux: &Tmux) -> Result<Vec<SessionInfo>> {
                 .max(session_activity),
             attached: f[6] == "1",
             windows: f[7].parse().unwrap_or(1),
+            parent_pane: (!f[9].is_empty()).then(|| f[9].to_string()),
             dead,
             pid: pane_state.as_ref().and_then(|pane| pane.pid),
             exit_status: pane_state.and_then(|pane| pane.exit_status),

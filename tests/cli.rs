@@ -63,6 +63,24 @@ fn run_tpp(server: &TmuxServer, root: &std::path::Path, args: &[&str]) -> Output
         .expect("run tpp")
 }
 
+fn run_tpp_from_pane(
+    server: &TmuxServer,
+    root: &std::path::Path,
+    pane: &str,
+    args: &[&str],
+) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_tpp"))
+        .arg("-L")
+        .arg(&server.socket)
+        .args(args)
+        .env("TPP_CONFIG_DIR", root.join("config"))
+        .env("TPP_STATE_DIR", root.join("state"))
+        .env("TMUX", "tpp-test")
+        .env("TMUX_PANE", pane)
+        .output()
+        .expect("run tpp from pane")
+}
+
 fn run_tpp_stdin(
     server: &TmuxServer,
     root: &std::path::Path,
@@ -110,6 +128,15 @@ fn run_tmux(server: &TmuxServer, args: &[&str]) -> Output {
         .args(args)
         .output()
         .expect("run tmux")
+}
+
+fn pane_id(server: &TmuxServer, target: &str) -> String {
+    let out = run_tmux(
+        server,
+        &["display-message", "-p", "-t", target, "#{pane_id}"],
+    );
+    assert_success(&out);
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 fn wait_for_raw_capture(server: &TmuxServer, target: &str, needle: &str) -> String {
@@ -224,6 +251,30 @@ fn ls_aliases() {
     for a in ["ls", "l", "list"] {
         assert!(matches!(parse(&[a]).cmd, Some(Cmd::Ls(_))), "alias {a}");
     }
+}
+
+#[test]
+fn children_and_parent_target_flags_parse() {
+    match parse(&["children", "--pane", "%42"]).cmd {
+        Some(Cmd::Children(args)) => {
+            assert_eq!(args.pane.as_deref(), Some("%42"));
+            assert!(args.target.is_none());
+        }
+        other => panic!("expected Children, got {other:?}"),
+    }
+    match parse(&["children", "-t", "codex/parent"]).cmd {
+        Some(Cmd::Children(args)) => {
+            assert_eq!(args.target.as_deref(), Some("codex/parent"));
+            assert!(args.pane.is_none());
+        }
+        other => panic!("expected Children, got {other:?}"),
+    }
+    match parse(&["tail", "-t", "parent"]).cmd {
+        Some(Cmd::Tail(args)) => assert_eq!(args.target.as_deref(), Some("parent")),
+        other => panic!("expected Tail, got {other:?}"),
+    }
+    assert!(try_parse(&["children", "--pane", "%1", "-t", "worker"]).is_err());
+    assert!(try_parse(&["tail", "-t", "parent", "worker"]).is_err());
 }
 
 #[test]
@@ -1365,6 +1416,258 @@ fn pane_targets_drive_send_paste_cat_wait_and_targets() {
     assert_success(&listed);
     let rows: Vec<serde_json::Value> = serde_json::from_slice(&listed.stdout).unwrap();
     assert!(rows.iter().all(|row| row["name"] != "mediator"));
+}
+
+#[test]
+fn parent_keyword_uses_callers_recorded_raw_pane_and_beats_session_name() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    assert_success(&run_tmux(
+        &server,
+        &["new-session", "-d", "-s", "spawner", "sh"],
+    ));
+    let spawner = pane_id(&server, "spawner");
+    assert_success(&run_tmux(
+        &server,
+        &["set-option", "-p", "-t", &spawner, "remain-on-exit", "on"],
+    ));
+
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["new", "--no-watch", "-s", "parent", "--", "sh"],
+    ));
+    assert_success(&run_tpp_from_pane(
+        &server,
+        tmp.path(),
+        &spawner,
+        &["new", "--no-watch", "-s", "child", "--", "sh"],
+    ));
+    let child = pane_id(&server, "tpp/child");
+
+    let recorded = run_tmux(
+        &server,
+        &["show-option", "-qv", "-t", "tpp/child", "@tpp_parent_pane"],
+    );
+    assert_success(&recorded);
+    assert_eq!(String::from_utf8_lossy(&recorded.stdout).trim(), spawner);
+
+    assert_success(&run_tpp_from_pane(
+        &server,
+        tmp.path(),
+        &child,
+        &["send", "-t", "parent", "to-recorded-parent"],
+    ));
+    assert_success(&run_tpp_from_pane(
+        &server,
+        tmp.path(),
+        &child,
+        &[
+            "paste",
+            "-t",
+            "parent",
+            "--no-enter",
+            "--no-verify",
+            " pasted-parent",
+        ],
+    ));
+    let spawner_capture = wait_for_raw_capture(&server, &spawner, "pasted-parent");
+    assert!(spawner_capture.contains("to-recorded-parent"));
+
+    let literal_parent = pane_id(&server, "tpp/parent");
+    let literal_capture = String::from_utf8_lossy(
+        &run_tmux(&server, &["capture-pane", "-p", "-t", &literal_parent]).stdout,
+    )
+    .to_string();
+    assert!(!literal_capture.contains("to-recorded-parent"));
+
+    assert_success(&run_tpp_from_pane(
+        &server,
+        tmp.path(),
+        &child,
+        &["send", "-t", "tpp/parent", "to-literal-session"],
+    ));
+    assert!(
+        wait_for_raw_capture(&server, &literal_parent, "to-literal-session")
+            .contains("to-literal-session")
+    );
+
+    let cat = run_tpp_from_pane(&server, tmp.path(), &child, &["cat", "parent"]);
+    assert_success(&cat);
+    assert!(String::from_utf8_lossy(&cat.stdout).contains("pasted-parent"));
+    assert_success(&run_tpp_from_pane(
+        &server,
+        tmp.path(),
+        &child,
+        &[
+            "wait",
+            "-t",
+            "parent",
+            "--text",
+            "to-recorded-parent",
+            "--timeout",
+            "1000",
+        ],
+    ));
+
+    assert_success(&run_tpp_from_pane(
+        &server,
+        tmp.path(),
+        &child,
+        &[
+            "send",
+            "-t",
+            "parent",
+            "-e",
+            "printf tail-parent-output; exit",
+        ],
+    ));
+    let tail = run_tpp_from_pane(
+        &server,
+        tmp.path(),
+        &child,
+        &["tail", "-t", "parent", "-n", "20"],
+    );
+    assert_success(&tail);
+    assert!(String::from_utf8_lossy(&tail.stdout).contains("tail-parent-output"));
+}
+
+#[test]
+fn parent_target_reports_stable_usage_and_not_found_errors() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+
+    let outside = run_tpp(&server, tmp.path(), &["cat", "parent"]);
+    assert_exit_code(&outside, 2);
+    assert!(String::from_utf8_lossy(&outside.stderr).contains("requires running inside tmux"));
+
+    assert_success(&run_tpp(
+        &server,
+        tmp.path(),
+        &["new", "--no-watch", "-s", "orphan", "--", "sh"],
+    ));
+    let orphan = pane_id(&server, "tpp/orphan");
+    let no_parent = run_tpp_from_pane(&server, tmp.path(), &orphan, &["cat", "parent"]);
+    assert_exit_code(&no_parent, 3);
+    assert!(String::from_utf8_lossy(&no_parent.stderr).contains("no parent recorded"));
+
+    assert_success(&run_tmux(
+        &server,
+        &["new-session", "-d", "-s", "gone-parent", "sh"],
+    ));
+    let parent = pane_id(&server, "gone-parent");
+    assert_success(&run_tpp_from_pane(
+        &server,
+        tmp.path(),
+        &parent,
+        &["new", "--no-watch", "-s", "bereaved", "--", "sh"],
+    ));
+    let child = pane_id(&server, "tpp/bereaved");
+    assert_success(&run_tmux(&server, &["kill-session", "-t", "gone-parent"]));
+
+    let gone = run_tpp_from_pane(&server, tmp.path(), &child, &["cat", "parent"]);
+    assert_exit_code(&gone, 3);
+    assert!(String::from_utf8_lossy(&gone.stderr).contains("parent pane gone"));
+}
+
+#[test]
+fn children_filters_stamped_sessions_for_current_pane_explicit_pane_and_session() {
+    if !tmux_available() {
+        return;
+    }
+
+    let server = TmuxServer::new();
+    let tmp = tempfile::tempdir().unwrap();
+    for name in ["parent-a", "parent-b", "parent-empty"] {
+        assert_success(&run_tmux(&server, &["new-session", "-d", "-s", name, "sh"]));
+    }
+    let parent_a = pane_id(&server, "parent-a");
+    let parent_b = pane_id(&server, "parent-b");
+    let parent_empty = pane_id(&server, "parent-empty");
+
+    for name in ["child-a1", "child-a2"] {
+        assert_success(&run_tpp_from_pane(
+            &server,
+            tmp.path(),
+            &parent_a,
+            &["new", "--no-watch", "-s", name, "--", "sh"],
+        ));
+    }
+    assert_success(&run_tpp_from_pane(
+        &server,
+        tmp.path(),
+        &parent_a,
+        &["run", "-s", "run-child", "--", "sleep", "30"],
+    ));
+    assert_success(&run_tpp_from_pane(
+        &server,
+        tmp.path(),
+        &parent_b,
+        &["new", "--no-watch", "-s", "child-b", "--", "sh"],
+    ));
+
+    let current = run_tpp_from_pane(&server, tmp.path(), &parent_a, &["-q", "children"]);
+    assert_success(&current);
+    let current_stdout = String::from_utf8_lossy(&current.stdout);
+    let current_names: std::collections::HashSet<&str> = current_stdout.lines().collect();
+    assert_eq!(
+        current_names,
+        ["tpp/child-a1", "tpp/child-a2", "tpp/run-child"]
+            .into_iter()
+            .collect()
+    );
+
+    let json = run_tpp(
+        &server,
+        tmp.path(),
+        &["--json", "children", "--pane", &parent_a],
+    );
+    assert_success(&json);
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(rows.len(), 3);
+    for row in &rows {
+        assert!(row["name"].as_str().unwrap().starts_with("tpp/"));
+        assert!(row["dir"].is_string());
+        assert!(row["created"].is_i64());
+        assert_eq!(row["state"], "running");
+    }
+
+    let child_a1 = pane_id(&server, "tpp/child-a1");
+    assert_success(&run_tpp_from_pane(
+        &server,
+        tmp.path(),
+        &child_a1,
+        &["new", "--no-watch", "-s", "grandchild", "--", "sh"],
+    ));
+    assert_success(&run_tmux(
+        &server,
+        &["new-window", "-d", "-t", "tpp/child-a1", "sh"],
+    ));
+    assert_success(&run_tmux(&server, &["kill-pane", "-t", &child_a1]));
+    assert_success(&run_tmux(&server, &["has-session", "-t", "tpp/child-a1"]));
+    let by_session = run_tpp(&server, tmp.path(), &["-q", "children", "-t", "child-a1"]);
+    assert_success(&by_session);
+    assert_eq!(
+        String::from_utf8_lossy(&by_session.stdout).trim(),
+        "tpp/grandchild"
+    );
+
+    let empty = run_tpp(&server, tmp.path(), &["children", "--pane", &parent_empty]);
+    assert_success(&empty);
+    assert!(empty.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&empty.stderr).contains("no child sessions"));
+
+    let outside = run_tpp(&server, tmp.path(), &["children"]);
+    assert_exit_code(&outside, 2);
+    assert!(String::from_utf8_lossy(&outside.stderr).contains("--pane %N or -t SESSION"));
 }
 
 #[test]

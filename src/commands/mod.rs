@@ -1,6 +1,7 @@
 //! Command implementations and the shared [`Ctx`] they run against.
 
 pub mod compat;
+pub mod family;
 pub mod io;
 pub mod lifecycle;
 pub mod meta;

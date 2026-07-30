@@ -39,6 +39,7 @@ complete -c tpp -n "__fish_tpp_needs_command" -f -a "watch" -d 'Inspect or contr
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "ls" -d 'List all tpp sessions'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "l" -d 'List all tpp sessions'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "list" -d 'List all tpp sessions'
+complete -c tpp -n "__fish_tpp_needs_command" -f -a "children" -d 'List tpp sessions spawned from a pane or session'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "attach" -d 'Attach to a session (interactive)'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "a" -d 'Attach to a session (interactive)'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "send" -d 'Send typed text (optionally Enter) or keys to a session'
@@ -189,6 +190,14 @@ complete -c tpp -n "__fish_tpp_using_subcommand list" -l json -d 'Machine-readab
 complete -c tpp -n "__fish_tpp_using_subcommand list" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand list" -s h -l help -d 'Print help'
 complete -c tpp -n "__fish_tpp_using_subcommand list" -s V -l version -d 'Print version'
+complete -c tpp -n "__fish_tpp_using_subcommand children" -l pane -d 'Query children of this pane instead of the caller\'s current pane' -r
+complete -c tpp -n "__fish_tpp_using_subcommand children" -s t -l target -d 'Query children spawned from this session\'s startup pane' -r
+complete -c tpp -n "__fish_tpp_using_subcommand children" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
+complete -c tpp -n "__fish_tpp_using_subcommand children" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
+complete -c tpp -n "__fish_tpp_using_subcommand children" -l json -d 'Machine-readable JSON output (where supported)'
+complete -c tpp -n "__fish_tpp_using_subcommand children" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
+complete -c tpp -n "__fish_tpp_using_subcommand children" -s h -l help -d 'Print help'
+complete -c tpp -n "__fish_tpp_using_subcommand children" -s V -l version -d 'Print version'
 complete -c tpp -n "__fish_tpp_using_subcommand attach" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
 complete -c tpp -n "__fish_tpp_using_subcommand attach" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
 complete -c tpp -n "__fish_tpp_using_subcommand attach" -l json -d 'Machine-readable JSON output (where supported)'
@@ -201,7 +210,7 @@ complete -c tpp -n "__fish_tpp_using_subcommand a" -l json -d 'Machine-readable 
 complete -c tpp -n "__fish_tpp_using_subcommand a" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand a" -s h -l help -d 'Print help'
 complete -c tpp -n "__fish_tpp_using_subcommand a" -s V -l version -d 'Print version'
-complete -c tpp -n "__fish_tpp_using_subcommand send" -s t -l target -d 'Target session startup pane or pane:<NAME> (default: sole session or picker)' -r
+complete -c tpp -n "__fish_tpp_using_subcommand send" -s t -l target -d 'Target session startup pane, pane:<NAME>, or parent (default: sole session or picker)' -r -a "parent"
 complete -c tpp -n "__fish_tpp_using_subcommand send" -s f -l file -d 'Read text from a file' -r -F
 complete -c tpp -n "__fish_tpp_using_subcommand send" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
 complete -c tpp -n "__fish_tpp_using_subcommand send" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
@@ -214,7 +223,7 @@ complete -c tpp -n "__fish_tpp_using_subcommand send" -l json -d 'Machine-readab
 complete -c tpp -n "__fish_tpp_using_subcommand send" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand send" -s h -l help -d 'Print help'
 complete -c tpp -n "__fish_tpp_using_subcommand send" -s V -l version -d 'Print version'
-complete -c tpp -n "__fish_tpp_using_subcommand s" -s t -l target -d 'Target session startup pane or pane:<NAME> (default: sole session or picker)' -r
+complete -c tpp -n "__fish_tpp_using_subcommand s" -s t -l target -d 'Target session startup pane, pane:<NAME>, or parent (default: sole session or picker)' -r -a "parent"
 complete -c tpp -n "__fish_tpp_using_subcommand s" -s f -l file -d 'Read text from a file' -r -F
 complete -c tpp -n "__fish_tpp_using_subcommand s" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
 complete -c tpp -n "__fish_tpp_using_subcommand s" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
@@ -227,7 +236,7 @@ complete -c tpp -n "__fish_tpp_using_subcommand s" -l json -d 'Machine-readable 
 complete -c tpp -n "__fish_tpp_using_subcommand s" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand s" -s h -l help -d 'Print help'
 complete -c tpp -n "__fish_tpp_using_subcommand s" -s V -l version -d 'Print version'
-complete -c tpp -n "__fish_tpp_using_subcommand paste" -s t -l target -d 'Target session startup pane or pane:<NAME> (default: sole session or picker)' -r
+complete -c tpp -n "__fish_tpp_using_subcommand paste" -s t -l target -d 'Target session startup pane, pane:<NAME>, or parent (default: sole session or picker)' -r -a "parent"
 complete -c tpp -n "__fish_tpp_using_subcommand paste" -s f -l file -d 'Read text from a file' -r -F
 complete -c tpp -n "__fish_tpp_using_subcommand paste" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
 complete -c tpp -n "__fish_tpp_using_subcommand paste" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
@@ -259,7 +268,8 @@ complete -c tpp -n "__fish_tpp_using_subcommand targets" -l json -d 'Machine-rea
 complete -c tpp -n "__fish_tpp_using_subcommand targets" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand targets" -s h -l help -d 'Print help'
 complete -c tpp -n "__fish_tpp_using_subcommand targets" -s V -l version -d 'Print version'
-complete -c tpp -n "__fish_tpp_using_subcommand cat" -s t -l target -d 'Session or pane:<NAME> to print. Positional sessions are still accepted' -r
+complete -c tpp -n "__fish_tpp_using_subcommand cat" -s t -l target -d 'Session, pane:<NAME>, or parent to print. Positional targets are still accepted' -r -a "parent"
+complete -c tpp -n "__fish_tpp_using_subcommand cat" -f -a "parent" -d 'Pane that spawned the calling session'
 complete -c tpp -n "__fish_tpp_using_subcommand cat" -s n -l lines -d 'Trailing lines to print (0 = visible screen only; default from config)' -r
 complete -c tpp -n "__fish_tpp_using_subcommand cat" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
 complete -c tpp -n "__fish_tpp_using_subcommand cat" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
@@ -270,7 +280,8 @@ complete -c tpp -n "__fish_tpp_using_subcommand cat" -l json -d 'Machine-readabl
 complete -c tpp -n "__fish_tpp_using_subcommand cat" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand cat" -s h -l help -d 'Print help'
 complete -c tpp -n "__fish_tpp_using_subcommand cat" -s V -l version -d 'Print version'
-complete -c tpp -n "__fish_tpp_using_subcommand cap" -s t -l target -d 'Session or pane:<NAME> to print. Positional sessions are still accepted' -r
+complete -c tpp -n "__fish_tpp_using_subcommand cap" -s t -l target -d 'Session, pane:<NAME>, or parent to print. Positional targets are still accepted' -r -a "parent"
+complete -c tpp -n "__fish_tpp_using_subcommand cap" -f -a "parent" -d 'Pane that spawned the calling session'
 complete -c tpp -n "__fish_tpp_using_subcommand cap" -s n -l lines -d 'Trailing lines to print (0 = visible screen only; default from config)' -r
 complete -c tpp -n "__fish_tpp_using_subcommand cap" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
 complete -c tpp -n "__fish_tpp_using_subcommand cap" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
@@ -281,7 +292,8 @@ complete -c tpp -n "__fish_tpp_using_subcommand cap" -l json -d 'Machine-readabl
 complete -c tpp -n "__fish_tpp_using_subcommand cap" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand cap" -s h -l help -d 'Print help'
 complete -c tpp -n "__fish_tpp_using_subcommand cap" -s V -l version -d 'Print version'
-complete -c tpp -n "__fish_tpp_using_subcommand capture" -s t -l target -d 'Session or pane:<NAME> to print. Positional sessions are still accepted' -r
+complete -c tpp -n "__fish_tpp_using_subcommand capture" -s t -l target -d 'Session, pane:<NAME>, or parent to print. Positional targets are still accepted' -r -a "parent"
+complete -c tpp -n "__fish_tpp_using_subcommand capture" -f -a "parent" -d 'Pane that spawned the calling session'
 complete -c tpp -n "__fish_tpp_using_subcommand capture" -s n -l lines -d 'Trailing lines to print (0 = visible screen only; default from config)' -r
 complete -c tpp -n "__fish_tpp_using_subcommand capture" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
 complete -c tpp -n "__fish_tpp_using_subcommand capture" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
@@ -292,6 +304,8 @@ complete -c tpp -n "__fish_tpp_using_subcommand capture" -l json -d 'Machine-rea
 complete -c tpp -n "__fish_tpp_using_subcommand capture" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand capture" -s h -l help -d 'Print help'
 complete -c tpp -n "__fish_tpp_using_subcommand capture" -s V -l version -d 'Print version'
+complete -c tpp -n "__fish_tpp_using_subcommand tail" -s t -l target -d 'Single session, pane:<NAME>, or parent to follow' -r -a "parent"
+complete -c tpp -n "__fish_tpp_using_subcommand tail" -f -a "parent" -d 'Pane that spawned the calling session'
 complete -c tpp -n "__fish_tpp_using_subcommand tail" -s i -l interval -d 'Poll interval in ms (default from config)' -r
 complete -c tpp -n "__fish_tpp_using_subcommand tail" -s n -l lines -d 'Print this many trailing lines before following' -r
 complete -c tpp -n "__fish_tpp_using_subcommand tail" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
@@ -300,6 +314,8 @@ complete -c tpp -n "__fish_tpp_using_subcommand tail" -l json -d 'Machine-readab
 complete -c tpp -n "__fish_tpp_using_subcommand tail" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand tail" -s h -l help -d 'Print help'
 complete -c tpp -n "__fish_tpp_using_subcommand tail" -s V -l version -d 'Print version'
+complete -c tpp -n "__fish_tpp_using_subcommand follow" -s t -l target -d 'Single session, pane:<NAME>, or parent to follow' -r -a "parent"
+complete -c tpp -n "__fish_tpp_using_subcommand follow" -f -a "parent" -d 'Pane that spawned the calling session'
 complete -c tpp -n "__fish_tpp_using_subcommand follow" -s i -l interval -d 'Poll interval in ms (default from config)' -r
 complete -c tpp -n "__fish_tpp_using_subcommand follow" -s n -l lines -d 'Print this many trailing lines before following' -r
 complete -c tpp -n "__fish_tpp_using_subcommand follow" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
@@ -308,7 +324,7 @@ complete -c tpp -n "__fish_tpp_using_subcommand follow" -l json -d 'Machine-read
 complete -c tpp -n "__fish_tpp_using_subcommand follow" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand follow" -s h -l help -d 'Print help'
 complete -c tpp -n "__fish_tpp_using_subcommand follow" -s V -l version -d 'Print version'
-complete -c tpp -n "__fish_tpp_using_subcommand wait" -s t -l target -d 'Target session startup pane or pane:<NAME> (default: sole session or picker)' -r
+complete -c tpp -n "__fish_tpp_using_subcommand wait" -s t -l target -d 'Target session startup pane, pane:<NAME>, or parent (default: sole session or picker)' -r -a "parent"
 complete -c tpp -n "__fish_tpp_using_subcommand wait" -l text -d 'Wait until this text appears in the pane' -r
 complete -c tpp -n "__fish_tpp_using_subcommand wait" -l stable-for -d 'Idle threshold in ms (default from config)' -r
 complete -c tpp -n "__fish_tpp_using_subcommand wait" -l timeout -d 'Timeout in ms (default from config; 0 = no timeout)' -r

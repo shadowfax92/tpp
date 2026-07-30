@@ -336,11 +336,7 @@ pub fn run(ctx: &Ctx, args: RunArgs) -> Result<()> {
     if args.watch {
         watch::validate_config(&ctx.cfg.watch)?;
     }
-    let parent_pane = if args.watch {
-        caller_parent_pane(ctx, None)?
-    } else {
-        None
-    };
+    let parent_pane = caller_parent_pane(ctx, None)?;
 
     session::create(
         &ctx.tmux,
@@ -959,6 +955,7 @@ mod tests {
             activity,
             attached: false,
             windows: 1,
+            parent_pane: None,
             dead: false,
             pid: Some(123),
             exit_status: None,

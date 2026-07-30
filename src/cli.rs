@@ -63,6 +63,9 @@ pub enum Cmd {
     #[command(visible_aliases = ["l", "list"])]
     Ls(LsArgs),
 
+    /// List tpp sessions spawned from a pane or session.
+    Children(ChildrenArgs),
+
     /// Attach to a session (interactive).
     #[command(visible_alias = "a")]
     Attach(AttachArgs),
@@ -274,6 +277,16 @@ pub struct LsArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct ChildrenArgs {
+    /// Query children of this pane instead of the caller's current pane.
+    #[arg(long, value_name = "TMUX_TARGET", conflicts_with = "target")]
+    pub pane: Option<String>,
+    /// Query children spawned from this session's startup pane.
+    #[arg(short = 't', long, value_name = "SESSION", conflicts_with = "pane")]
+    pub target: Option<String>,
+}
+
+#[derive(Args, Debug)]
 pub struct AttachArgs {
     /// Session to attach to. If omitted, pick (fzf when available, else the sole session).
     pub session: Option<String>,
@@ -281,7 +294,7 @@ pub struct AttachArgs {
 
 #[derive(Args, Debug)]
 pub struct SendArgs {
-    /// Target session startup pane or pane:<NAME> (default: sole session or picker).
+    /// Target session startup pane, pane:<NAME>, or parent (default: sole session or picker).
     #[arg(short = 't', long, value_name = "TARGET")]
     pub target: Option<String>,
     /// Read text from a file.
@@ -309,7 +322,7 @@ pub struct SendArgs {
 
 #[derive(Args, Debug)]
 pub struct PasteArgs {
-    /// Target session startup pane or pane:<NAME> (default: sole session or picker).
+    /// Target session startup pane, pane:<NAME>, or parent (default: sole session or picker).
     #[arg(short = 't', long, value_name = "TARGET")]
     pub target: Option<String>,
     /// Read text from a file.
@@ -355,7 +368,7 @@ pub struct TargetsArgs {}
 
 #[derive(Args, Debug)]
 pub struct CatArgs {
-    /// Session or pane:<NAME> to print. Positional sessions are still accepted.
+    /// Session, pane:<NAME>, or parent to print. Positional targets are still accepted.
     #[arg(short = 't', long, value_name = "TARGET")]
     pub target: Option<String>,
     /// Sessions to print (default: the sole session, or a picker).
@@ -377,7 +390,10 @@ pub struct CatArgs {
 
 #[derive(Args, Debug)]
 pub struct TailArgs {
-    /// Sessions to follow (default: the sole session, or a picker).
+    /// Single session, pane:<NAME>, or parent to follow.
+    #[arg(short = 't', long, value_name = "TARGET", conflicts_with = "sessions")]
+    pub target: Option<String>,
+    /// Sessions or targets to follow (default: the sole session, or a picker).
     #[arg(value_name = "SESSION")]
     pub sessions: Vec<String>,
     /// Poll interval in ms (default from config).
@@ -390,7 +406,7 @@ pub struct TailArgs {
 
 #[derive(Args, Debug)]
 pub struct WaitArgs {
-    /// Target session startup pane or pane:<NAME> (default: sole session or picker).
+    /// Target session startup pane, pane:<NAME>, or parent (default: sole session or picker).
     #[arg(short = 't', long, value_name = "TARGET")]
     pub target: Option<String>,
     /// Wait until this text appears in the pane.

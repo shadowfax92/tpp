@@ -39,6 +39,10 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
   `@tpp_cmd`, `@tpp_created`, `@tpp_origin_pane`. No external index needed for discovery
   or pane targeting — tmux is the source of truth. `ls` reads session metadata back with
   a single `list-sessions -F` call.
+- **Family bridge** is also stateless: `parent` resolves the caller's session to its
+  `@tpp_parent_pane`, while `children` filters the same one-call session listing by that
+  option (or compares a queried session's `@tpp_origin_pane`). Both sides operate on
+  canonical raw pane ids, so the parent need not be a tpp session.
 - **Names** default to memorable `<adjective>-<animal>-<mmdd>` petnames for both `new` and
   `run`; command meaning stays in `@tpp_cmd`. Random retries avoid occupied combinations
   before numeric `-N` suffixing. `name` pre-mints one or more unused names without creating
@@ -73,10 +77,10 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
   Automated sends are pattern-gated and bounded; escalation is once per stable episode plus a
   session cooldown.
 - **Parent escalation** uses `@tpp_parent_pane`, normally resolved from `$TMUX_PANE` at `new`
-  time and overridable with `--parent-pane`. The watcher uses the internal bracketed-paste path
-  against that raw pane id, neutralizes shell-active punctuation in dynamic fields, then sends
-  Enter. An optional shell notifier gets captured tail text only through `TPP_TAIL`, not
-  command-string substitution.
+  or `run` time and overridable on `new` with `--parent-pane`. The watcher uses the internal
+  bracketed-paste path against that raw pane id, neutralizes shell-active punctuation in dynamic
+  fields, then sends Enter. An optional shell notifier gets captured tail text only through
+  `TPP_TAIL`, not command-string substitution.
 - **Watcher state** is socket-scoped under `~/.tpp/data/watch/<socket>/`: one stale-checked
   pidfile per session plus an append-only `watch.log`. `@tpp_watch=1` records that a watcher is
   armed; the watcher exits when the session or origin pane is gone/dead and does not own teardown.
@@ -87,7 +91,8 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
 
 ## Command surface
 
-Ergonomic (primary): `run`(r) · `new`(n) · `name` · `ls`(l,list) · `attach`(a) · `send`(s) ·
+Ergonomic (primary): `run`(r) · `new`(n) · `name` · `ls`(l,list) · `children` · `attach`(a) ·
+`send`(s) ·
 `paste` · `bind` · `targets` · `unbind` · `cat`(cap,capture) · `tail`(follow) · `wait` · `watch` ·
 `rm`(kill,remove) · `reap` · `exit`(e,quit) · `clear`(clr) · `has` · `rename` · `config` · `init` ·
 `doctor` · `completions`.
@@ -99,7 +104,7 @@ flags the scripts use onto the same internals (or forward straight to `tmux`).
 
 ## Agent ergonomics
 
-- `--json` on `ls`, `cat`, `wait`, `run --wait`.
+- `--json` on `ls`, `children`, `cat`, `wait`, `run --wait`.
 - `run` and `name` print **only** session names to stdout; everything else goes to stderr.
 - Stable exit codes: `0` ok · `2` usage · `3` not found · `4` timeout · `5` unsent paste ·
   `1` other; `has --alive` uses `1` for exists-but-dead.
@@ -107,7 +112,7 @@ flags the scripts use onto the same internals (or forward straight to `tmux`).
 - Human-facing omitted-session commands select the sole global session automatically, or use
   external `fzf` when multiple sessions are available. `cat -a` includes every recorded
   transcript in that picker; `tail` and `rm` invoke `fzf --multi`.
-  `pane:<name>` is explicit-only and never appears in the session picker.
+  `pane:<name>` and `parent` are explicit-only and never appear in the session picker.
 
 ## Config
 

@@ -51,6 +51,8 @@ tpp tail api                   # follow it live
 tpp send -t api "rs" -e        # type "rs" + Enter into it
 tpp bind mediator --pane api --role mediator
 tpp paste -t pane:mediator --stdin
+tpp paste -t parent "done"      # reach the pane that spawned this session
+tpp children -q                 # sessions spawned from this pane
 tpp has api --alive            # 0 only while the root pane process is running
 tpp reap --dry-run             # preview stale detached sessions before cleanup
 tpp watch ls                   # list active per-session watchers
@@ -79,6 +81,7 @@ Run `tpp <cmd> --help` for full flags. Aliases in parentheses.
 | `name` | Print a fresh dated petname without creating a session. `-n N` prints N mutually unique names, one per line. |
 | `watch` | Control per-session watchers: `run -t NAME` (foreground/internal), `ls`, and `stop -t NAME`. |
 | `ls` (`l`, `list`) | List all tpp sessions. `--json` includes `state`, `pane_dead`, root `pid`, and `exit_status`; `-q` names-only; `--exited` includes recorded ones. |
+| `children` | List sessions spawned from the current pane. `--pane %N` queries a pane, `-t SESSION` queries a session's startup pane, `--json` is machine-readable, and `-q` prints names only. |
 | `attach` (`a`) | Attach, or `switch-client` if you're already inside tmux. |
 | `rm` (`kill`) | Kill sessions. `--all` removes every tpp session, `--record` saves output first. |
 | `reap` | Remove stale detached sessions. Dead root panes are stale immediately; live sessions require root-window activity older than `[reap] ttl` (default `6h`). `--dry-run` previews reasons; output is recorded before removal by default. |
@@ -106,10 +109,13 @@ is pinned to that session's startup pane; explicit window/pane targets keep norm
 - **Automatic names are memorable petnames**: `<adjective>-<animal>-<mmdd>`, with the
   configured `session_prefix` applied as usual. Explicit `-s` names are unchanged.
 - **Stable exit codes:** `0` ok · `2` usage · `3` not found · `4` timeout · `5` pasted content appears unsent · `1` other. `has --alive` uses `1` for exists-but-dead.
-- **`--json`** on `ls`, `cat`, `wait`, and `run --wait`.
+- **`--json`** on `ls`, `children`, `cat`, `wait`, and `run --wait`.
 - **Bracketed paste** delivers a prompt with `/slash` commands and newlines to a TUI exactly as
   written.
-- **Pane targets** let scripts address `pane:<name>` for `send`, `paste`, `cat`, and `wait`.
+- **Pane targets** let scripts address `pane:<name>` or the reserved `parent` keyword for
+  `send`, `paste`, `cat`, `tail`, and `wait`. `parent` resolves through the caller's session
+  to its recorded spawning pane; a session literally named `parent` remains addressable as
+  `tpp/parent`.
   Plain session targets use the session's startup pane, even after attaches or new windows.
   If a stamped startup pane is gone, pane I/O exits `3` instead of following session focus;
   unstamped legacy sessions retain tmux's bare-session behavior.
@@ -149,9 +155,9 @@ and `max_enters` caps sends per unchanged episode; a send must produce a changed
 watcher escalates. Escalation fires once per unchanged episode and respects the per-session
 `cooldown`.
 
-When `new` is called inside tmux it stores the caller's raw pane id in `@tpp_parent_pane`;
-`--parent-pane TMUX_TARGET` overrides it. Escalation bracket-pastes one message plus Enter into
-that pane and can also run `[watch] notify`. Notify commands receive `TPP_SESSION`,
+When `new` or `run` is called inside tmux it stores the caller's raw pane id in
+`@tpp_parent_pane`; `new --parent-pane TMUX_TARGET` overrides it. Escalation bracket-pastes
+one message plus Enter into that pane and can also run `[watch] notify`. Notify commands receive `TPP_SESSION`,
 `TPP_SESSION_NAME`, `TPP_REASON`, `TPP_TAIL` (last five lines), `TPP_DIR`, and
 `TPP_PARENT_PANE`; only `{session}` and `{reason}` are substituted in the command string, so
 captured screen text stays out of shell templates. Shell-active punctuation in dynamic parent-nudge
@@ -180,19 +186,28 @@ checks to the composer avoids mistaking submitted scrollback echoes for unsent i
 --verify` uses the same check after `--enter`; `send --keys` skips it. `paste --no-enter` also skips
 verification because it intentionally leaves text unsubmitted.
 
-Named panes support mediator and ping flows without a registry:
+Named panes and automatic parent links support mediator and ping flows without a registry:
 
 ```sh
 tpp bind mediator --here --role mediator
 echo "worker done" | tpp paste -t pane:mediator --stdin
 tpp targets --json
 tpp unbind mediator
+
+# From a child: reach the raw pane that created this session.
+tpp paste -t parent "worker done"
+
+# From a parent: enumerate children created from this pane.
+tpp children
 ```
 
 Bindings live as tmux pane user-options (`@tpp_name`, `@tpp_role`). Names are server-wide by
 convention; if duplicate pane options are created manually, `pane:<name>` resolves the first match.
 A removed pane cannot be listed without external state, but panes left by `remain-on-exit` show
 `dead` through tmux `pane_dead`.
+
+The parent/child bridge uses session options tpp already stamps (`@tpp_parent_pane` and
+`@tpp_origin_pane`), so it needs no binding or external registry.
 
 ## Configuration
 
