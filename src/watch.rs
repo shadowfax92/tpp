@@ -562,7 +562,7 @@ fn screen_hash(screen: &str) -> u64 {
     hasher.finish()
 }
 
-fn sanitized_line(text: &str, limit: usize) -> String {
+pub(crate) fn sanitized_line(text: &str, limit: usize) -> String {
     text.split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")

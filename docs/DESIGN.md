@@ -43,6 +43,16 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
   `@tpp_parent_pane`, while `children` filters the same one-call session listing by that
   option (or compares a queried session's `@tpp_origin_pane`). Both sides operate on
   canonical raw pane ids, so the parent need not be a tpp session.
+- **Mail uses a doorbell/mailbox split.** Full markdown messages are synchronously
+  dual-written to socket-scoped sender `sent/` and recipient `inbox/` files with
+  per-mailbox monotonic ids. Only one sanitized path-bearing notification line enters the
+  recipient pane; notification failure never invalidates durable delivery.
+- **Mailbox isolation is ergonomic, not a security boundary.** `$TMUX_PANE` selects the
+  caller's session mailbox or a pane-keyed fallback for ordinary human panes. `-t` is the
+  explicit cross-mailbox mediator path, while `parent` can resolve to either kind.
+- **Mail lifecycle follows session lifecycle.** A new generation clears ghost state,
+  rename moves the live mailbox, and rm/exit/reap archive it beneath socket-scoped exited
+  state for the same configured retention window.
 - **Names** default to memorable `<adjective>-<animal>-<mmdd>` petnames for both `new` and
   `run`; command meaning stays in `@tpp_cmd`. Random retries avoid occupied combinations
   before numeric `-N` suffixing. `name` pre-mints one or more unused names without creating
@@ -91,7 +101,8 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
 
 ## Command surface
 
-Ergonomic (primary): `run`(r) · `new`(n) · `name` · `ls`(l,list) · `children` · `attach`(a) ·
+Ergonomic (primary): `run`(r) · `new`(n) · `name` · `ls`(l,list) · `children` · `mail` ·
+`reply` · `attach`(a) ·
 `send`(s) ·
 `paste` · `bind` · `targets` · `unbind` · `cat`(cap,capture) · `tail`(follow) · `wait` · `watch` ·
 `rm`(kill,remove) · `reap` · `exit`(e,quit) · `clear`(clr) · `has` · `rename` · `config` · `init` ·

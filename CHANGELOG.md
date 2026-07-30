@@ -36,6 +36,10 @@ agents.
 - **Session family bridge:** the reserved `parent` target lets `send`, `paste`, `cat`, `tail`,
   and `wait` reach the pane that spawned the caller, while `children` lists sessions spawned
   from the current, explicit, or session-origin pane using existing tmux user-options only.
+- **Durable mail:** `mail TARGET`, `mail send`, `mail ls`, `mail read`, and `reply` dual-write
+  markdown message files to isolated socket/session mailboxes. One sanitized path-bearing
+  pane ping acts as a best-effort doorbell; unread counts surface in `ls`, and mailboxes
+  move, archive, and reset with session lifecycle.
 - **tmux-compat verbs** (`has-session`, `new-session`, `attach-session`, `kill-session`,
   `list-sessions`, `set-buffer`, `paste-buffer`, `send-keys`, `capture-pane`, `x`) so `tpp` is a
   drop-in for `rmux` in `sf-auto-mux` after `s/rmux/tpp/`.

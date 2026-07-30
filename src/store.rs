@@ -61,6 +61,11 @@ impl Store {
         }
     }
 
+    /// Directory used for archived mailboxes that share this exited-record generation.
+    pub(crate) fn mail_archive_dir(&self) -> PathBuf {
+        self.dir.join("mail")
+    }
+
     fn paths_for_dir(dir: &std::path::Path, name: &str) -> (PathBuf, PathBuf) {
         let base = dir.join(encode(name));
         (base.with_extension("json"), base.with_extension("log"))

@@ -13,7 +13,7 @@ use crate::cli::{
 };
 use crate::commands::io::{record_session, run_wait};
 use crate::commands::{
-    code, current_session, die, no_such_session, no_such_session_message, select, Ctx,
+    code, current_session, die, mail, no_such_session, no_such_session_message, select, Ctx,
 };
 use crate::config::{parse_duration, Config, DurationCfg};
 use crate::output::{paint, print_json, Style};
@@ -337,6 +337,7 @@ pub fn run(ctx: &Ctx, args: RunArgs) -> Result<()> {
         watch::validate_config(&ctx.cfg.watch)?;
     }
     let parent_pane = caller_parent_pane(ctx, None)?;
+    mail::initialize_session(ctx, &name)?;
 
     session::create(
         &ctx.tmux,
@@ -366,7 +367,25 @@ pub fn run(ctx: &Ctx, args: RunArgs) -> Result<()> {
         if args.record {
             let _ = record_session(ctx, &name);
         }
-        let _ = ctx.tmux.run(["kill-session", "-t", &exact(&name)]);
+        match mail::archive_session(ctx, &name) {
+            Ok(archived) => {
+                if let Err(err) = ctx.tmux.run(["kill-session", "-t", &exact(&name)]) {
+                    if let Some(archived) = archived {
+                        if let Err(restore_err) = mail::restore_session(ctx, archived) {
+                            eprintln!(
+                                "tpp: warning: failed to kill {name}: {err}; mailbox restore also \
+                                 failed: {restore_err}"
+                            );
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                eprintln!(
+                    "tpp: warning: failed to archive mailbox for {name}; session retained: {err}"
+                );
+            }
+        }
         std::process::exit(status);
     }
 
@@ -414,6 +433,7 @@ pub fn new(ctx: &Ctx, args: NewArgs) -> Result<()> {
             session::OnExitHook::new(&ctx.paths, store_socket.as_deref(), &name, command)
         })
         .transpose()?;
+    mail::initialize_session(ctx, &name)?;
 
     session::create(
         &ctx.tmux,
@@ -467,6 +487,7 @@ struct LsRow {
     pane_dead: Option<bool>,
     pid: Option<u32>,
     exit_status: Option<i32>,
+    mail_unread: usize,
 }
 
 fn humanize_age(secs: i64) -> String {
@@ -489,10 +510,12 @@ fn humanize_duration(secs: u64) -> String {
 pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
     let live = session::list(&ctx.tmux)?;
     let now = now_epoch();
+    let mail_socket = ctx.tmux.store_socket();
+    let mail_store = mail::MailStore::new(&ctx.paths, mail_socket.as_deref());
 
-    let mut rows: Vec<LsRow> = live
-        .iter()
-        .map(|s| LsRow {
+    let mut rows = Vec::with_capacity(live.len());
+    for s in &live {
+        rows.push(LsRow {
             name: s.name.clone(),
             status: s.status().to_string(),
             state: s.state().to_string(),
@@ -502,8 +525,9 @@ pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
             pane_dead: Some(s.dead),
             pid: s.pid,
             exit_status: s.exit_status,
-        })
-        .collect();
+            mail_unread: mail_store.unread_count_session(&s.name)?,
+        });
+    }
 
     let show_exited = args.exited || (!args.no_exited && ctx.cfg.ls.show_exited_hours > 0);
     if show_exited {
@@ -530,6 +554,7 @@ pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
                 pane_dead: None,
                 pid: None,
                 exit_status: None,
+                mail_unread: 0,
             });
         }
     }
@@ -555,6 +580,17 @@ pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
         .max()
         .unwrap_or(6)
         .max(6);
+    let mail_w = rows
+        .iter()
+        .map(|row| {
+            if row.mail_unread > 0 {
+                format!("mail:{}", row.mail_unread).len()
+            } else {
+                0
+            }
+        })
+        .max()
+        .unwrap_or(0);
     for r in &rows {
         let status = match r.status.as_str() {
             "running" => paint(&r.status, Style::Green),
@@ -564,14 +600,21 @@ pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
         };
         // Pad on the uncolored text so columns line up regardless of ANSI codes.
         let status_pad = " ".repeat(status_w.saturating_sub(r.status.len()));
+        let mail = if r.mail_unread > 0 {
+            format!("mail:{}", r.mail_unread)
+        } else {
+            String::new()
+        };
         println!(
-            "{:<name_w$}  {}{}  {:>4}  {}",
+            "{:<name_w$}  {}{}  {:>4}  {:<mail_w$}  {}",
             r.name,
             status,
             status_pad,
             paint(&r.age, Style::Dim),
+            mail,
             paint(&r.command, Style::Dim),
             name_w = name_w,
+            mail_w = mail_w,
         );
     }
     Ok(())
@@ -676,10 +719,18 @@ fn remove_session_with_lifecycle(ctx: &Ctx, name: &str, record: bool) -> Result<
         let _ = record_session(ctx, name);
     }
     let on_exit = session::prepare_on_exit_hook(&ctx.tmux, name);
+    let archived = mail::archive_session(ctx, name)?;
     if let Some(hook) = &on_exit {
         hook.disable_session_closed_hook(&ctx.tmux);
     }
-    ctx.tmux.run(["kill-session", "-t", &exact(name)])?;
+    if let Err(kill_err) = ctx.tmux.run(["kill-session", "-t", &exact(name)]) {
+        if let Some(archived) = archived {
+            mail::restore_session(ctx, archived).with_context(|| {
+                format!("kill failed for {name}: {kill_err}; restoring its mailbox")
+            })?;
+        }
+        return Err(kill_err.into());
+    }
     if let Some(hook) = on_exit {
         hook.fire(name);
     }
@@ -795,6 +846,7 @@ pub fn rm(ctx: &Ctx, args: RmArgs) -> Result<()> {
 
     let mut removed = 0;
     let mut missing = false;
+    let mut failed = false;
     for name in &targets {
         if !session::exists(&ctx.tmux, name) {
             eprintln!("tpp: {}", no_such_session_message(name));
@@ -803,7 +855,10 @@ pub fn rm(ctx: &Ctx, args: RmArgs) -> Result<()> {
         }
         match remove_session_with_lifecycle(ctx, name, args.record) {
             Ok(_) => removed += 1,
-            Err(e) => eprintln!("tpp: failed to remove {name}: {e}"),
+            Err(e) => {
+                eprintln!("tpp: failed to remove {name}: {e}");
+                failed = true;
+            }
         }
     }
     if !ctx.quiet {
@@ -811,6 +866,9 @@ pub fn rm(ctx: &Ctx, args: RmArgs) -> Result<()> {
     }
     if missing {
         std::process::exit(code::NOT_FOUND);
+    }
+    if failed {
+        std::process::exit(1);
     }
     Ok(())
 }
@@ -836,6 +894,7 @@ pub fn exit(ctx: &Ctx, args: ExitArgs) -> Result<()> {
 pub fn clear(ctx: &Ctx) -> Result<()> {
     let store_socket = ctx.tmux.store_socket();
     let n = Store::new(&ctx.paths, store_socket.as_deref()).clear()?;
+    mail::MailStore::new(&ctx.paths, store_socket.as_deref()).clear_archives()?;
     if ctx.json {
         print_json(&serde_json::json!({ "cleared": n }))?;
     } else if !ctx.quiet {
@@ -888,6 +947,7 @@ pub fn rename(ctx: &Ctx, args: RenameArgs) -> Result<()> {
     let restart_watch = watch_marked || watch_stopped;
     ctx.tmux
         .run(["rename-session", "-t", &exact(&session_name), &new_name])?;
+    mail::rename_session(ctx, &session_name, &new_name)?;
     if restart_watch {
         session::set_watch_armed(&ctx.tmux, &new_name, true);
         if let Err(err) = watch::spawn_detached(ctx, &new_name) {
