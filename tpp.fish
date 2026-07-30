@@ -34,6 +34,7 @@ complete -c tpp -n "__fish_tpp_needs_command" -f -a "run" -d 'Run a command in a
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "r" -d 'Run a command in a new detached session (prints the session name)'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "new" -d 'Create a session (detached; runs your shell if no command is given)'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "n" -d 'Create a session (detached; runs your shell if no command is given)'
+complete -c tpp -n "__fish_tpp_needs_command" -f -a "name" -d 'Generate fresh petnames without creating sessions'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "watch" -d 'Inspect or control per-session stuck-screen watchers'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "ls" -d 'List all tpp sessions'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "l" -d 'List all tpp sessions'
@@ -78,7 +79,7 @@ complete -c tpp -n "__fish_tpp_needs_command" -f -a "paste-buffer" -d 'Catch-all
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "send-keys" -d 'Catch-all positional bucket for hidden tmux-compat verbs — forwarded to tmux verbatim'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "capture-pane" -d 'Catch-all positional bucket for hidden tmux-compat verbs — forwarded to tmux verbatim'
 complete -c tpp -n "__fish_tpp_needs_command" -f -a "x" -d 'Raw passthrough to tmux (using tpp\'s socket)'
-complete -c tpp -n "__fish_tpp_using_subcommand run" -s s -l name -d 'Session name (auto-generated from the command if omitted)' -r
+complete -c tpp -n "__fish_tpp_using_subcommand run" -s s -l name -d 'Session name (a dated petname is generated if omitted)' -r
 complete -c tpp -n "__fish_tpp_using_subcommand run" -s c -l dir -d 'Working directory for the session' -r
 complete -c tpp -n "__fish_tpp_using_subcommand run" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
 complete -c tpp -n "__fish_tpp_using_subcommand run" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
@@ -89,7 +90,7 @@ complete -c tpp -n "__fish_tpp_using_subcommand run" -l json -d 'Machine-readabl
 complete -c tpp -n "__fish_tpp_using_subcommand run" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand run" -s h -l help -d 'Print help'
 complete -c tpp -n "__fish_tpp_using_subcommand run" -s V -l version -d 'Print version'
-complete -c tpp -n "__fish_tpp_using_subcommand r" -s s -l name -d 'Session name (auto-generated from the command if omitted)' -r
+complete -c tpp -n "__fish_tpp_using_subcommand r" -s s -l name -d 'Session name (a dated petname is generated if omitted)' -r
 complete -c tpp -n "__fish_tpp_using_subcommand r" -s c -l dir -d 'Working directory for the session' -r
 complete -c tpp -n "__fish_tpp_using_subcommand r" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
 complete -c tpp -n "__fish_tpp_using_subcommand r" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
@@ -100,7 +101,7 @@ complete -c tpp -n "__fish_tpp_using_subcommand r" -l json -d 'Machine-readable 
 complete -c tpp -n "__fish_tpp_using_subcommand r" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand r" -s h -l help -d 'Print help'
 complete -c tpp -n "__fish_tpp_using_subcommand r" -s V -l version -d 'Print version'
-complete -c tpp -n "__fish_tpp_using_subcommand new" -s s -l name -d 'Session name (auto-generated from the directory if omitted)' -r
+complete -c tpp -n "__fish_tpp_using_subcommand new" -s s -l name -d 'Session name (a dated petname is generated if omitted)' -r
 complete -c tpp -n "__fish_tpp_using_subcommand new" -s c -l dir -d 'Working directory for the session' -r
 complete -c tpp -n "__fish_tpp_using_subcommand new" -l on-exit -d 'Shell command to run once when this session\'s root command exits' -r
 complete -c tpp -n "__fish_tpp_using_subcommand new" -l parent-pane -d 'Pane to nudge if the session stalls (default: the calling tmux pane)' -r
@@ -113,7 +114,7 @@ complete -c tpp -n "__fish_tpp_using_subcommand new" -l json -d 'Machine-readabl
 complete -c tpp -n "__fish_tpp_using_subcommand new" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand new" -s h -l help -d 'Print help'
 complete -c tpp -n "__fish_tpp_using_subcommand new" -s V -l version -d 'Print version'
-complete -c tpp -n "__fish_tpp_using_subcommand n" -s s -l name -d 'Session name (auto-generated from the directory if omitted)' -r
+complete -c tpp -n "__fish_tpp_using_subcommand n" -s s -l name -d 'Session name (a dated petname is generated if omitted)' -r
 complete -c tpp -n "__fish_tpp_using_subcommand n" -s c -l dir -d 'Working directory for the session' -r
 complete -c tpp -n "__fish_tpp_using_subcommand n" -l on-exit -d 'Shell command to run once when this session\'s root command exits' -r
 complete -c tpp -n "__fish_tpp_using_subcommand n" -l parent-pane -d 'Pane to nudge if the session stalls (default: the calling tmux pane)' -r
@@ -126,6 +127,13 @@ complete -c tpp -n "__fish_tpp_using_subcommand n" -l json -d 'Machine-readable 
 complete -c tpp -n "__fish_tpp_using_subcommand n" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
 complete -c tpp -n "__fish_tpp_using_subcommand n" -s h -l help -d 'Print help'
 complete -c tpp -n "__fish_tpp_using_subcommand n" -s V -l version -d 'Print version'
+complete -c tpp -n "__fish_tpp_using_subcommand name" -s n -l count -d 'Number of mutually unique petnames to print' -r
+complete -c tpp -n "__fish_tpp_using_subcommand name" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
+complete -c tpp -n "__fish_tpp_using_subcommand name" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
+complete -c tpp -n "__fish_tpp_using_subcommand name" -l json -d 'Machine-readable JSON output (where supported)'
+complete -c tpp -n "__fish_tpp_using_subcommand name" -s q -l quiet -d 'Suppress non-essential output (with `ls`, print only names)'
+complete -c tpp -n "__fish_tpp_using_subcommand name" -s h -l help -d 'Print help'
+complete -c tpp -n "__fish_tpp_using_subcommand name" -s V -l version -d 'Print version'
 complete -c tpp -n "__fish_tpp_using_subcommand watch; and not __fish_seen_subcommand_from run ls stop" -s L -l socket -d 'tmux socket name (`tmux -L`). Default: from config, else the shared tmux server' -r
 complete -c tpp -n "__fish_tpp_using_subcommand watch; and not __fish_seen_subcommand_from run ls stop" -l config -d 'Config file path (default: ~/.config/tpp/config.toml)' -r -F
 complete -c tpp -n "__fish_tpp_using_subcommand watch; and not __fish_seen_subcommand_from run ls stop" -l json -d 'Machine-readable JSON output (where supported)'
