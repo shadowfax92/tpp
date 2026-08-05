@@ -158,6 +158,32 @@ impl HerdrBackend {
         command
     }
 
+    fn socket_is_default(&self, socket: &OsStr) -> bool {
+        self.run_json(["session", "list", "--json"])
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("sessions")?
+                    .as_array()?
+                    .iter()
+                    .find_map(|session| {
+                        session
+                            .get("default")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false)
+                            .then(|| string_field(session, "socket_path"))
+                            .flatten()
+                    })
+            })
+            .is_some_and(|default| Path::new(&default).as_os_str() == socket)
+    }
+
+    fn inside_default_session(&self) -> bool {
+        std::env::var_os("HERDR_ENV").is_some()
+            && std::env::var_os("HERDR_SOCKET_PATH")
+                .is_some_and(|socket| self.socket_is_default(&socket))
+    }
+
     fn run<I, S>(&self, args: I) -> Result<String>
     where
         I: IntoIterator<Item = S>,
@@ -322,6 +348,25 @@ impl HerdrBackend {
             .filter(|label| !label.is_empty())
             .unwrap_or(name)
             .to_string()
+    }
+
+    fn focus_tab(&self, name: &str) -> Result<()> {
+        let locked = self.lock_registry()?;
+        let record = locked
+            .registry
+            .sessions
+            .get(name.trim().trim_start_matches('='))
+            .cloned()
+            .with_context(|| format!("no such Herdr session {name}"))?;
+        let workspace = locked
+            .registry
+            .workspace_id
+            .clone()
+            .context("tpp Herdr workspace is missing")?;
+        drop(locked);
+        self.run(["workspace", "focus", &workspace])?;
+        self.run(["tab", "focus", &record.tab_id])?;
+        Ok(())
     }
 
     fn session_state_dir(&self, name: &str, tab_id: &str) -> PathBuf {
@@ -755,22 +800,8 @@ impl Backend for HerdrBackend {
     }
 
     fn focus(&self, name: &str) -> Result<()> {
-        let locked = self.lock_registry()?;
-        let record = locked
-            .registry
-            .sessions
-            .get(name.trim().trim_start_matches('='))
-            .cloned()
-            .with_context(|| format!("no such Herdr session {name}"))?;
-        let workspace = locked
-            .registry
-            .workspace_id
-            .clone()
-            .context("tpp Herdr workspace is missing")?;
-        drop(locked);
-        self.run(["workspace", "focus", &workspace])?;
-        self.run(["tab", "focus", &record.tab_id])?;
-        if std::env::var_os("HERDR_ENV").is_some() {
+        self.focus_tab(name)?;
+        if self.inside_default_session() {
             return Ok(());
         }
         let error = self.command().args(["session", "attach", "default"]).exec();
@@ -790,7 +821,7 @@ impl Backend for HerdrBackend {
     }
 
     fn current_pane(&self) -> Option<String> {
-        std::env::var_os("HERDR_ENV")?;
+        self.inside_default_session().then_some(())?;
         let pane = std::env::var("HERDR_PANE_ID").ok()?;
         self.canonical_pane(&pane)
     }
@@ -1151,6 +1182,7 @@ fn append_hook_log(path: &Path, message: &str) {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
 
@@ -1174,6 +1206,9 @@ entity=$1
 action=$2
 shift 2
 case "$entity:$action" in
+  session:list)
+    printf '%s\n' '{"sessions":[{"default":true,"name":"default","running":true,"socket_path":"/fake/default.sock"},{"default":false,"name":"named","running":true,"socket_path":"/fake/named.sock"}]}'
+    ;;
   workspace:list)
     if [ -s "$state" ]; then
       printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1"}]}}'
@@ -1300,6 +1335,15 @@ esac
     }
 
     #[test]
+    fn default_session_detection_uses_the_socket_identity() {
+        let root = tempdir().unwrap();
+        let (backend, _) = fake_backend(root.path());
+
+        assert!(backend.socket_is_default(OsStr::new("/fake/default.sock")));
+        assert!(!backend.socket_is_default(OsStr::new("/fake/named.sock")));
+    }
+
+    #[test]
     fn focus_uses_the_persisted_opaque_workspace_id() {
         let root = tempdir().unwrap();
         let (backend, log) = fake_backend(root.path());
@@ -1311,7 +1355,7 @@ esac
             backend.save_registry(&locked).unwrap();
         }
 
-        backend.focus("tpp/one").unwrap();
+        backend.focus_tab("tpp/one").unwrap();
 
         let calls = std::fs::read_to_string(log).unwrap();
         assert!(calls.contains("workspace focus opaque-workspace"));
