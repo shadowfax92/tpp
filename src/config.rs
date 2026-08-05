@@ -385,7 +385,7 @@ socket = ""
 # Command for `tpp new`/`tpp run` when you don't pass one. Empty = $SHELL.
 shell = ""
 
-# Prefix applied to all tpp-created session names and Herdr tab labels. Empty = no prefix.
+# Prefix applied to stored session names and stripped from Herdr tab labels. Empty = no prefix.
 session_prefix = "tpp/"
 
 [ls]

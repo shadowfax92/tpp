@@ -8,8 +8,8 @@
 
 `tpp` is a thin orchestration layer over a terminal multiplexer. tmux remains the default
 backend. With `herdr-mode = true`, one lazy `tpp` workspace is created in the default Herdr
-session and every tpp session becomes a tab labeled with its tpp name. The command surface is
-the same on both backends.
+session and every tpp session becomes a tab whose label omits the configured storage prefix. The
+command surface is the same on both backends.
 
 ## Why
 

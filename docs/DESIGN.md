@@ -41,9 +41,9 @@ in a worktree, **paste** a prompt into the agent TUI verbatim (bracketed paste),
   a single `list-sessions -F` call.
 - **Herdr backend.** The default Herdr session contains one lazy workspace labeled `tpp`.
   The first tpp session owns its initial tab; later sessions create sibling tabs labeled with
-  their full tpp names. A flock-protected JSON registry records workspace, tab, root-pane,
-  binding, parent, watch, command, and lifecycle identities. Discovery reconciles manually
-  closed tabs and panes against Herdr before returning results.
+  their configured storage prefix omitted. A flock-protected JSON registry records workspace,
+  tab, root-pane, binding, parent, watch, command, and lifecycle identities. Discovery reconciles
+  manually closed tabs and panes against Herdr before returning results.
 - **Family bridge.** `parent` and `children` operate on canonical raw pane ids through backend
   metadata, so the parent need not itself be a tpp session.
 - **Mail uses a doorbell/mailbox split.** Full markdown messages are synchronously

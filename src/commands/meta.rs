@@ -6,6 +6,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use clap::CommandFactory;
 
+use crate::backend::BackendKind;
 use crate::cli::{Cli, CompletionsArgs, ConfigAction, ConfigArgs, InitArgs};
 use crate::commands::Ctx;
 use crate::config::STARTER_CONFIG;
@@ -143,11 +144,28 @@ pub fn doctor(ctx: &Ctx) -> Result<()> {
     );
     println!("  state:       {}", ctx.paths.state_dir.display());
 
-    let all = ctx.backend.list().unwrap_or_default();
+    let mut readiness_error = None;
+    let all = match ctx.backend.list() {
+        Ok(all) => {
+            if ctx.backend.kind() == BackendKind::Herdr {
+                println!("  readiness:   {}", ok(true));
+            }
+            all
+        }
+        Err(error) if ctx.backend.kind() == BackendKind::Herdr => {
+            println!("  readiness:   {}  ({error})", ok(false));
+            readiness_error = Some(error);
+            Vec::new()
+        }
+        Err(_) => Vec::new(),
+    };
     println!("  sessions:    {} total", all.len());
 
     if backend_version.is_none() {
         anyhow::bail!("{backend} not found on PATH");
+    }
+    if let Some(error) = readiness_error {
+        return Err(error).context("Herdr default session is unavailable");
     }
     Ok(())
 }

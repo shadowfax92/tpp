@@ -90,8 +90,17 @@ pub trait Backend {
     fn capture(&self, target: &str, spec: CaptureSpec) -> Result<String>;
     fn send_text(&self, target: &str, body: &str, bracketed: bool) -> Result<()>;
     fn send_keys(&self, target: &str, keys: &[String]) -> Result<()>;
-    fn submit_text(&self, target: &str, body: &str, bracketed: bool) -> Result<()> {
+    fn submit_text(
+        &self,
+        target: &str,
+        body: &str,
+        bracketed: bool,
+        enter_delay_ms: u64,
+    ) -> Result<()> {
         self.send_text(target, body, bracketed)?;
+        if enter_delay_ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(enter_delay_ms));
+        }
         self.send_keys(target, &["Enter".to_string()])
     }
     fn set_watch_armed(&self, name: &str, armed: bool) -> Result<()>;

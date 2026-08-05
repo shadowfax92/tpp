@@ -15,7 +15,7 @@ use serde_json::Value;
 use super::{Backend, BackendKind, BoundPane, CaptureSpec, CreateSpec, PaneLocation};
 use crate::config::Config;
 use crate::paths::{create_private_dir_all, encode_state_component, Paths};
-use crate::session::{now_epoch, PaneState, SessionInfo};
+use crate::session::{now_epoch, storage_prefix, PaneState, SessionInfo};
 
 const NAMESPACE: &str = "herdr:default";
 const WORKSPACE_LABEL: &str = "tpp";
@@ -263,6 +263,7 @@ impl HerdrBackend {
         spec: &CreateSpec,
         dir: &str,
     ) -> Result<(String, String, String)> {
+        let tab_label = self.tab_label(&spec.name);
         let env = [
             format!("TPP_SESSION_NAME={}", spec.name),
             format!("TPP_SESSION={}", spec.name),
@@ -278,7 +279,7 @@ impl HerdrBackend {
                 "--cwd".to_string(),
                 dir.to_string(),
                 "--label".to_string(),
-                spec.name.clone(),
+                tab_label.clone(),
             ]
         } else {
             vec![
@@ -307,12 +308,20 @@ impl HerdrBackend {
         let pane_id = required_string(pane, "pane_id")?;
         let workspace_id = required_string(tab, "workspace_id")?;
         if workspace.is_none() {
-            if let Err(error) = self.run(["tab", "rename", &tab_id, &spec.name]) {
+            if let Err(error) = self.run(["tab", "rename", &tab_id, &tab_label]) {
                 let _ = self.run(["tab", "close", &tab_id]);
                 return Err(error);
             }
         }
         Ok((workspace_id, tab_id, pane_id))
+    }
+
+    fn tab_label(&self, name: &str) -> String {
+        let prefix = storage_prefix(&self.cfg);
+        name.strip_prefix(&prefix)
+            .filter(|label| !label.is_empty())
+            .unwrap_or(name)
+            .to_string()
     }
 
     fn session_state_dir(&self, name: &str, tab_id: &str) -> PathBuf {
@@ -466,6 +475,18 @@ impl HerdrBackend {
             .unwrap_or(100)
     }
 
+    fn available_rows(&self, pane_id: &str) -> u64 {
+        self.run_json(["pane", "get", pane_id])
+            .ok()
+            .and_then(|value| {
+                let scroll = value.pointer("/result/pane/scroll")?;
+                let history = scroll.get("max_offset_from_bottom")?.as_u64()?;
+                let viewport = scroll.get("viewport_rows")?.as_u64()?;
+                Some(history.saturating_add(viewport))
+            })
+            .unwrap_or(1000)
+    }
+
     fn record_state(&self, record: &SessionRecord) -> Option<PaneState> {
         self.run(["pane", "get", &record.pane_id]).ok()?;
         if !record.shell {
@@ -565,7 +586,14 @@ impl Backend for HerdrBackend {
     }
 
     fn target_description(&self) -> String {
-        "Herdr default session".to_string()
+        let workspace = self
+            .lock_registry()
+            .ok()
+            .and_then(|locked| locked.registry.workspace_id.clone());
+        match workspace {
+            Some(workspace) => format!("Herdr default session (tpp workspace {workspace})"),
+            None => "Herdr default session (tpp workspace not created)".to_string(),
+        }
     }
 
     fn exists(&self, name: &str) -> bool {
@@ -694,9 +722,11 @@ impl Backend for HerdrBackend {
             .get(old)
             .cloned()
             .with_context(|| format!("no such Herdr session {old}"))?;
-        self.run(["tab", "rename", &record.tab_id, new])?;
+        let old_label = self.tab_label(old);
+        let new_label = self.tab_label(new);
+        self.run(["tab", "rename", &record.tab_id, &new_label])?;
         if let Err(error) = write_private(&record.name_file, new.as_bytes(), 0o600) {
-            let _ = self.run(["tab", "rename", &record.tab_id, old]);
+            let _ = self.run(["tab", "rename", &record.tab_id, &old_label]);
             return Err(error);
         }
         locked.registry.sessions.remove(old);
@@ -713,7 +743,12 @@ impl Backend for HerdrBackend {
                 old.as_bytes(),
                 0o600,
             );
-            let _ = self.run(["tab", "rename", &locked.registry.sessions[old].tab_id, old]);
+            let _ = self.run([
+                "tab",
+                "rename",
+                &locked.registry.sessions[old].tab_id,
+                &old_label,
+            ]);
             return Err(error);
         }
         Ok(())
@@ -791,7 +826,12 @@ impl Backend for HerdrBackend {
             args.extend(["--source".to_string(), "visible".to_string()]);
         } else {
             args.extend(["--source".to_string(), "recent-unwrapped".to_string()]);
-            if !spec.all_history {
+            if spec.all_history {
+                args.extend([
+                    "--lines".to_string(),
+                    self.available_rows(&args[2]).to_string(),
+                ]);
+            } else {
                 if let Some(lines) = spec.lines.filter(|lines| *lines > 0) {
                     let requested = lines.saturating_add(self.viewport_rows(&args[2]));
                     args.extend(["--lines".to_string(), requested.to_string()]);
@@ -832,7 +872,13 @@ impl Backend for HerdrBackend {
         Ok(())
     }
 
-    fn submit_text(&self, target: &str, body: &str, _bracketed: bool) -> Result<()> {
+    fn submit_text(
+        &self,
+        target: &str,
+        body: &str,
+        _bracketed: bool,
+        _enter_delay_ms: u64,
+    ) -> Result<()> {
         let pane = self
             .pane_id(target)
             .with_context(|| format!("pane not found: {target}"))?;
@@ -1170,14 +1216,26 @@ case "$entity:$action" in
     pane=$1
     tab=$(awk -v pane="$pane" '$2 == pane { print $1 }' "$state")
     [ -n "$tab" ] || exit 1
-    printf '{"result":{"pane":{"pane_id":"%s","tab_id":"%s","workspace_id":"w1","scroll":{"viewport_rows":24}}}}\n' "$pane" "$tab"
+    printf '{"result":{"pane":{"pane_id":"%s","tab_id":"%s","workspace_id":"w1","scroll":{"max_offset_from_bottom":96,"viewport_rows":24}}}}\n' "$pane" "$tab"
     ;;
   pane:process-info)
     pane=$2
     printf '{"result":{"process_info":{"pane_id":"%s","foreground_process_group_id":42,"shell_pid":42}}}\n' "$pane"
     ;;
   pane:read)
-    printf '%s\n' 'fake-output'
+    lines=0
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--lines" ]; then lines=$2; shift 2; else shift; fi
+    done
+    if [ "$lines" -gt 80 ]; then
+      i=1
+      while [ "$i" -le "$lines" ]; do
+        printf 'line-%s\n' "$i"
+        i=$((i + 1))
+      done
+    else
+      printf '%s\n' 'fake-output'
+    fi
     ;;
   *)
     printf 'unsupported fake Herdr command: %s %s\n' "$entity" "$action" >&2
@@ -1222,6 +1280,16 @@ esac
     }
 
     #[test]
+    fn tab_labels_strip_the_normalized_storage_prefix() {
+        let root = tempdir().unwrap();
+        let (mut backend, _) = fake_backend(root.path());
+        backend.cfg.session_prefix = "team:".to_string();
+
+        assert_eq!(backend.tab_label("team_api"), "api");
+        assert_eq!(backend.tab_label("outside"), "outside");
+    }
+
+    #[test]
     fn exited_status_requires_complete_record() {
         let root = tempdir().unwrap();
         let path = root.path().join("status");
@@ -1256,6 +1324,21 @@ esac
                 .capture(
                     "tpp/one",
                     CaptureSpec {
+                        lines: None,
+                        escape: false,
+                        all_history: true,
+                    },
+                )
+                .unwrap()
+                .lines()
+                .count(),
+            120
+        );
+        assert_eq!(
+            backend
+                .capture(
+                    "tpp/one",
+                    CaptureSpec {
                         lines: Some(20),
                         escape: false,
                         all_history: false,
@@ -1265,6 +1348,7 @@ esac
             "fake-output"
         );
         backend.send_text("tpp/two", "hello", true).unwrap();
+        backend.submit_text("tpp/two", "delayed", true, 50).unwrap();
         backend.rename("tpp/two", "tpp/renamed").unwrap();
         backend.bind_pane("agent", "worker", "tpp/renamed").unwrap();
         assert_eq!(backend.list_bindings().unwrap()[0].pane_id, "w1:p2");
@@ -1276,7 +1360,9 @@ esac
         let calls = std::fs::read_to_string(log).unwrap();
         assert_eq!(calls.matches("workspace create").count(), 1);
         assert_eq!(calls.matches("tab create").count(), 1);
-        assert!(calls.contains("tab rename w1:t1 tpp/one"));
-        assert!(calls.contains("--label tpp/two"));
+        assert!(calls.contains("tab rename w1:t1 one"));
+        assert!(calls.contains("--label two"));
+        assert!(calls.contains("pane run w1:p2 delayed"));
+        assert!(calls.contains("tab rename w1:t2 renamed"));
     }
 }

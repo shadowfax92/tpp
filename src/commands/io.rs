@@ -271,7 +271,6 @@ fn handle_delivery_result(result: Result<()>) -> Result<()> {
     }
 }
 
-/// Deliver input to a target as literal text, bracketed paste, or raw key names.
 #[allow(clippy::too_many_arguments)]
 fn deliver(
     backend: &dyn Backend,
@@ -289,13 +288,13 @@ fn deliver(
         backend.send_keys(target, key_words)?;
     } else if !body.is_empty() {
         let bracketed = use_paste || body.contains('\n');
-        if enter && enter_delay_ms == 0 {
-            backend.submit_text(target, body, bracketed)?;
+        if enter {
+            backend.submit_text(target, body, bracketed, enter_delay_ms)?;
         } else {
             backend.send_text(target, body, bracketed)?;
         }
     }
-    if enter && (body.is_empty() || enter_delay_ms > 0 || as_keys) {
+    if enter && (body.is_empty() || as_keys) {
         if enter_delay_ms > 0 {
             std::thread::sleep(Duration::from_millis(enter_delay_ms));
         }
