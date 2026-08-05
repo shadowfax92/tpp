@@ -257,6 +257,7 @@ session_prefix = "tpp/"  # prefix for tpp-created sessions; "" disables prefixin
 
 [send]
 bracketed_paste = true   # multi-line text pastes verbatim
+enter_delay_ms = 0       # delay Enter after literal text or logical keys
 
 [new]
 remain_on_exit = true    # keep a finished command's output on screen for cat/tail
@@ -295,6 +296,10 @@ cooldown = "10m"
 # pattern = "/Sign in to continue/"
 # action = "notify"
 ```
+
+Herdr uses its atomic `pane run` operation for bracketed pastes. That operation submits text and
+Enter together and has no delayed-Enter variant, so `enter_delay_ms` applies only to literal text
+and logical-key submissions in Herdr mode.
 
 ## How it works
 

@@ -755,15 +755,20 @@ impl Backend for HerdrBackend {
     }
 
     fn focus(&self, name: &str) -> Result<()> {
-        let (_, record) = self
-            .record(name)
+        let locked = self.lock_registry()?;
+        let record = locked
+            .registry
+            .sessions
+            .get(name.trim().trim_start_matches('='))
+            .cloned()
             .with_context(|| format!("no such Herdr session {name}"))?;
-        let workspace = record
-            .tab_id
-            .split_once(':')
-            .map(|(workspace, _)| workspace)
-            .unwrap_or(&record.tab_id);
-        self.run(["workspace", "focus", workspace])?;
+        let workspace = locked
+            .registry
+            .workspace_id
+            .clone()
+            .context("tpp Herdr workspace is missing")?;
+        drop(locked);
+        self.run(["workspace", "focus", &workspace])?;
         self.run(["tab", "focus", &record.tab_id])?;
         if std::env::var_os("HERDR_ENV").is_some() {
             return Ok(());
@@ -876,9 +881,14 @@ impl Backend for HerdrBackend {
         &self,
         target: &str,
         body: &str,
-        _bracketed: bool,
-        _enter_delay_ms: u64,
+        bracketed: bool,
+        enter_delay_ms: u64,
     ) -> Result<()> {
+        if !bracketed && enter_delay_ms > 0 {
+            self.send_text(target, body, false)?;
+            std::thread::sleep(std::time::Duration::from_millis(enter_delay_ms));
+            return self.send_keys(target, &["Enter".to_string()]);
+        }
         let pane = self
             .pane_id(target)
             .with_context(|| format!("pane not found: {target}"))?;
@@ -1290,6 +1300,25 @@ esac
     }
 
     #[test]
+    fn focus_uses_the_persisted_opaque_workspace_id() {
+        let root = tempdir().unwrap();
+        let (backend, log) = fake_backend(root.path());
+        backend.create(create_spec("tpp/one")).unwrap();
+        {
+            let mut locked = backend.lock_registry().unwrap();
+            locked.registry.workspace_id = Some("opaque-workspace".to_string());
+            locked.registry.sessions.get_mut("tpp/one").unwrap().tab_id = "opaque-tab".to_string();
+            backend.save_registry(&locked).unwrap();
+        }
+
+        backend.focus("tpp/one").unwrap();
+
+        let calls = std::fs::read_to_string(log).unwrap();
+        assert!(calls.contains("workspace focus opaque-workspace"));
+        assert!(calls.contains("tab focus opaque-tab"));
+    }
+
+    #[test]
     fn exited_status_requires_complete_record() {
         let root = tempdir().unwrap();
         let path = root.path().join("status");
@@ -1349,6 +1378,9 @@ esac
         );
         backend.send_text("tpp/two", "hello", true).unwrap();
         backend.submit_text("tpp/two", "delayed", true, 50).unwrap();
+        backend
+            .submit_text("tpp/two", "literal-delayed", false, 1)
+            .unwrap();
         backend.rename("tpp/two", "tpp/renamed").unwrap();
         backend.bind_pane("agent", "worker", "tpp/renamed").unwrap();
         assert_eq!(backend.list_bindings().unwrap()[0].pane_id, "w1:p2");
@@ -1363,6 +1395,8 @@ esac
         assert!(calls.contains("tab rename w1:t1 one"));
         assert!(calls.contains("--label two"));
         assert!(calls.contains("pane run w1:p2 delayed"));
+        assert!(calls.contains("pane send-text w1:p2 literal-delayed"));
+        assert!(calls.contains("pane send-keys w1:p2 Enter"));
         assert!(calls.contains("tab rename w1:t2 renamed"));
     }
 }
