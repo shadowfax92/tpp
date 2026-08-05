@@ -6,12 +6,12 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use clap::CommandFactory;
 
+use crate::backend::BackendKind;
 use crate::cli::{Cli, CompletionsArgs, ConfigAction, ConfigArgs, InitArgs};
 use crate::commands::Ctx;
 use crate::config::STARTER_CONFIG;
 use crate::output::{paint, Style};
 use crate::paths::create_private_dir_all;
-use crate::session;
 
 pub fn config(ctx: &Ctx, args: ConfigArgs) -> Result<()> {
     match args.action.unwrap_or(ConfigAction::Show) {
@@ -102,17 +102,19 @@ pub fn doctor(ctx: &Ctx) -> Result<()> {
         }
     };
 
-    let tmux_version = std::process::Command::new("tmux")
-        .arg("-V")
+    let backend = ctx.backend.kind().as_str();
+    let version_flag = if backend == "tmux" { "-V" } else { "--version" };
+    let backend_version = std::process::Command::new(backend)
+        .arg(version_flag)
         .output()
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
 
     println!("{}", paint("tpp doctor", Style::Bold));
-    match &tmux_version {
-        Some(v) => println!("  tmux:        {}  ({v})", ok(true)),
-        None => println!("  tmux:        {}  — install tmux", ok(false)),
+    match &backend_version {
+        Some(version) => println!("  {backend:<12}{}  ({version})", ok(true)),
+        None => println!("  {backend:<12}{}  — install {backend}", ok(false)),
     }
 
     let fzf = std::process::Command::new("fzf")
@@ -129,10 +131,7 @@ pub fn doctor(ctx: &Ctx) -> Result<()> {
         }
     );
 
-    println!(
-        "  socket:      {}",
-        ctx.tmux.socket().unwrap_or("(default tmux server)")
-    );
+    println!("  backend:     {}", ctx.backend.target_description());
     let cfg_exists = ctx.config_path.exists();
     println!(
         "  config:      {}  {}",
@@ -145,11 +144,28 @@ pub fn doctor(ctx: &Ctx) -> Result<()> {
     );
     println!("  state:       {}", ctx.paths.state_dir.display());
 
-    let all = session::list(&ctx.tmux).unwrap_or_default();
+    let mut readiness_error = None;
+    let all = match ctx.backend.list() {
+        Ok(all) => {
+            if ctx.backend.kind() == BackendKind::Herdr {
+                println!("  readiness:   {}", ok(true));
+            }
+            all
+        }
+        Err(error) if ctx.backend.kind() == BackendKind::Herdr => {
+            println!("  readiness:   {}  ({error})", ok(false));
+            readiness_error = Some(error);
+            Vec::new()
+        }
+        Err(_) => Vec::new(),
+    };
     println!("  sessions:    {} total", all.len());
 
-    if tmux_version.is_none() {
-        anyhow::bail!("tmux not found on PATH");
+    if backend_version.is_none() {
+        anyhow::bail!("{backend} not found on PATH");
+    }
+    if let Some(error) = readiness_error {
+        return Err(error).context("Herdr default session is unavailable");
     }
     Ok(())
 }

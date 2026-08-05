@@ -597,12 +597,7 @@ fn required_inbox(
 }
 
 fn caller_mailbox(ctx: &Ctx) -> Option<Mailbox> {
-    std::env::var_os("TMUX")?;
-    let pane = std::env::var("TMUX_PANE")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())?;
-    let pane = family::canonical_pane(&ctx.tmux, &pane)?;
+    let pane = ctx.backend.current_pane()?;
     if let Some(name) = managed_session_for_pane(ctx, &pane) {
         Some(Mailbox::Session(name))
     } else {
@@ -611,13 +606,9 @@ fn caller_mailbox(ctx: &Ctx) -> Option<Mailbox> {
 }
 
 fn managed_session_for_pane(ctx: &Ctx, pane: &str) -> Option<String> {
-    let name = ctx
-        .tmux
-        .run(["display-message", "-p", "-t", pane, "#{session_name}"])
-        .ok()?
-        .trim()
-        .to_string();
-    session::list(&ctx.tmux)
+    let name = ctx.backend.session_for_pane(pane)?;
+    ctx.backend
+        .list()
         .ok()?
         .into_iter()
         .any(|session| session.name == name)
@@ -628,17 +619,20 @@ fn own_mailbox(ctx: &Ctx) -> Mailbox {
     caller_mailbox(ctx).unwrap_or_else(|| {
         die(
             code::USAGE,
-            "no current mailbox; run inside tmux or select a session with -t",
+            "no current mailbox; run inside the active multiplexer or select a session with -t",
         )
     })
 }
 
 fn session_recipient(ctx: &Ctx, raw: &str) -> Recipient {
-    let name = session::resolve_existing_name(&ctx.tmux, &ctx.cfg, raw);
-    if !session::exists(&ctx.tmux, &name) {
+    let name = ctx.backend.resolve_name(&ctx.cfg, raw);
+    if !ctx.backend.exists(&name) {
         no_such_session(&name);
     }
-    let ping_pane = session::origin_pane(&ctx.tmux, &name).unwrap_or_else(|| name.clone());
+    let ping_pane = ctx
+        .backend
+        .origin_pane(&name)
+        .unwrap_or_else(|| name.clone());
     Recipient {
         mailbox: Mailbox::Session(name),
         ping_pane,
@@ -649,7 +643,10 @@ fn resolve_send_target(ctx: &Ctx, raw: &str) -> Recipient {
     if family::is_parent_target(raw) {
         let pane = family::resolve_parent_pane(ctx);
         if let Some(name) = managed_session_for_pane(ctx, &pane) {
-            let ping_pane = session::origin_pane(&ctx.tmux, &name).unwrap_or_else(|| pane.clone());
+            let ping_pane = ctx
+                .backend
+                .origin_pane(&name)
+                .unwrap_or_else(|| pane.clone());
             return Recipient {
                 mailbox: Mailbox::Session(name),
                 ping_pane,
@@ -665,7 +662,9 @@ fn resolve_send_target(ctx: &Ctx, raw: &str) -> Recipient {
 
 fn resolve_reply_target(ctx: &Ctx, from: &str) -> Recipient {
     if let Some(pane) = from.strip_prefix("pane:") {
-        let pane = family::canonical_pane(&ctx.tmux, pane)
+        let pane = ctx
+            .backend
+            .canonical_pane(pane)
             .unwrap_or_else(|| die(code::NOT_FOUND, "reply target pane is gone"));
         return Recipient {
             mailbox: Mailbox::Pane(pane.clone()),
@@ -729,7 +728,7 @@ fn send_to(
     recipient: Recipient,
     outgoing: Outgoing,
 ) -> Result<PathBuf> {
-    let socket = ctx.tmux.store_socket();
+    let socket = ctx.backend.namespace();
     let store = MailStore::new(&ctx.paths, socket.as_deref());
     store.validate_send_root()?;
     let message = Message {
@@ -753,7 +752,7 @@ fn send_to(
             inbox_path.display()
         );
         if let Err(err) = deliver_paste(
-            &ctx.tmux,
+            ctx.backend.as_ref(),
             &recipient.ping_pane,
             &recipient.address(),
             &ping,
@@ -822,7 +821,7 @@ fn send(ctx: &Ctx, args: MailSendArgs) -> Result<()> {
 
 pub fn reply(ctx: &Ctx, args: ReplyArgs) -> Result<()> {
     let sender = own_mailbox(ctx);
-    let socket = ctx.tmux.store_socket();
+    let socket = ctx.backend.namespace();
     let store = MailStore::new(&ctx.paths, socket.as_deref());
     let (_, _, original) = required_inbox(&store, &sender, &args.id)?;
     let recipient = resolve_reply_target(ctx, &original.from);
@@ -856,7 +855,7 @@ struct MailListRow {
 
 fn list(ctx: &Ctx, args: MailLsArgs) -> Result<()> {
     let mailbox = selected_mailbox(ctx, args.target.as_deref());
-    let socket = ctx.tmux.store_socket();
+    let socket = ctx.backend.namespace();
     let store = MailStore::new(&ctx.paths, socket.as_deref());
     let mut rows = Vec::new();
     for folder in [Folder::Inbox, Folder::Sent] {
@@ -935,7 +934,7 @@ struct MailReadOutput {
 
 fn read(ctx: &Ctx, args: MailReadArgs) -> Result<()> {
     let mailbox = selected_mailbox(ctx, args.target.as_deref());
-    let socket = ctx.tmux.store_socket();
+    let socket = ctx.backend.namespace();
     let store = MailStore::new(&ctx.paths, socket.as_deref());
     let (path, raw, message) = required_inbox(&store, &mailbox, &args.id)?;
     store.mark_read(&mailbox, &args.id)?;
@@ -951,22 +950,22 @@ fn read(ctx: &Ctx, args: MailReadArgs) -> Result<()> {
 }
 
 pub(crate) fn initialize_session(ctx: &Ctx, name: &str) -> Result<()> {
-    let socket = ctx.tmux.store_socket();
+    let socket = ctx.backend.namespace();
     MailStore::new(&ctx.paths, socket.as_deref()).reset_session(name)
 }
 
 pub(crate) fn rename_session(ctx: &Ctx, old: &str, new: &str) -> Result<()> {
-    let socket = ctx.tmux.store_socket();
+    let socket = ctx.backend.namespace();
     MailStore::new(&ctx.paths, socket.as_deref()).rename_session(old, new)
 }
 
 pub(crate) fn archive_session(ctx: &Ctx, name: &str) -> Result<Option<ArchivedMailbox>> {
-    let socket = ctx.tmux.store_socket();
+    let socket = ctx.backend.namespace();
     MailStore::new(&ctx.paths, socket.as_deref()).archive_session(name, session::now_epoch())
 }
 
 pub(crate) fn restore_session(ctx: &Ctx, archived: ArchivedMailbox) -> Result<()> {
-    let socket = ctx.tmux.store_socket();
+    let socket = ctx.backend.namespace();
     MailStore::new(&ctx.paths, socket.as_deref()).restore_archived(archived)
 }
 

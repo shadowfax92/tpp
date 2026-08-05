@@ -22,7 +22,6 @@ use crate::config::{WatchAction, WatchCfg, WatchRuleCfg};
 use crate::output::print_json;
 use crate::paths::{create_private_dir_all, encode_state_component};
 use crate::session;
-use crate::tmux::tgt;
 
 fn builtin_rules() -> Vec<WatchRuleCfg> {
     vec![
@@ -405,7 +404,7 @@ impl Drop for PidGuard {
 }
 
 fn watch_root(ctx: &Ctx) -> PathBuf {
-    let socket = ctx.tmux.store_socket();
+    let socket = ctx.backend.namespace();
     ctx.paths.socket_state_dir("watch", socket.as_deref())
 }
 
@@ -519,9 +518,7 @@ pub fn spawn_detached(ctx: &Ctx, session_name: &str) -> Result<()> {
     let stderr = stdout.try_clone()?;
     let mut command =
         Command::new(std::env::current_exe().context("resolving current tpp binary")?);
-    if let Some(socket) = ctx.tmux.socket() {
-        command.args(["-L", socket]);
-    }
+    command.args(ctx.backend.selector_args());
     command
         .arg("--config")
         .arg(&ctx.config_path)
@@ -551,9 +548,9 @@ pub fn spawn_detached(ctx: &Ctx, session_name: &str) -> Result<()> {
 }
 
 fn origin_is_alive(ctx: &Ctx, origin: &str) -> bool {
-    ctx.tmux
-        .run(["display-message", "-p", "-t", origin, "#{pane_dead}"])
-        .is_ok_and(|dead| dead.trim() == "0")
+    ctx.backend
+        .pane_state(origin)
+        .is_some_and(|pane| !pane.dead)
 }
 
 fn screen_hash(screen: &str) -> u64 {
@@ -606,7 +603,7 @@ fn nudge_message(session_name: &str, reason: &str, tail: &str) -> String {
 
 fn send_parent_nudge(ctx: &Ctx, parent: &str, message: &str) -> Result<()> {
     deliver_paste(
-        &ctx.tmux,
+        ctx.backend.as_ref(),
         parent,
         parent,
         message,
@@ -636,7 +633,7 @@ fn run_notify(
         .env("TPP_TAIL", tail)
         .env(
             "TPP_DIR",
-            session::session_dir(&ctx.tmux, session_name).unwrap_or_default(),
+            ctx.backend.session_dir(session_name).unwrap_or_default(),
         )
         .env("TPP_PARENT_PANE", parent.unwrap_or(""))
         .status()
@@ -704,7 +701,7 @@ fn notify_command(template: &str) -> String {
 }
 
 fn escalate(ctx: &Ctx, root: &Path, session_name: &str, reason: &str, screen: &str) {
-    let parent = session::parent_pane(&ctx.tmux, session_name);
+    let parent = ctx.backend.parent_pane(session_name);
     let tail = last_lines(screen, 5);
     let reason_line = sanitized_line(reason, 160);
     append_log(root, session_name, &format!("escalated: {reason_line}"));
@@ -749,12 +746,12 @@ fn watch_loop(ctx: &Ctx, root: &Path, session_name: &str, origin: &str, token: &
         if stop_requested(root, session_name, token) {
             return Ok(());
         }
-        if session::origin_pane(&ctx.tmux, session_name).as_deref() != Some(origin)
+        if ctx.backend.origin_pane(session_name).as_deref() != Some(origin)
             || !origin_is_alive(ctx, origin)
         {
             return Ok(());
         }
-        let captured = match capture(&ctx.tmux, origin, Some(30), true, false) {
+        let captured = match capture(ctx.backend.as_ref(), origin, Some(30), true, false) {
             Ok(captured) => captured,
             Err(_) => return Ok(()),
         };
@@ -762,14 +759,7 @@ fn watch_loop(ctx: &Ctx, root: &Path, session_name: &str, origin: &str, token: &
         let screen = last_lines(&trim_trailing_blank(&stripped), 30);
         match engine.observe(started.elapsed(), screen_hash(&screen), &screen) {
             Some(WatchDecision::Send { pattern, keys }) => {
-                let mut args = vec![
-                    "send-keys".to_string(),
-                    "-t".to_string(),
-                    tgt(origin),
-                    "--".to_string(),
-                ];
-                args.extend(keys.iter().cloned());
-                if ctx.tmux.run(&args).is_err() {
+                if ctx.backend.send_keys(origin, &keys).is_err() {
                     return Ok(());
                 }
                 append_log(
@@ -792,33 +782,33 @@ fn watch_loop(ctx: &Ctx, root: &Path, session_name: &str, origin: &str, token: &
 /// Run one watcher loop in the foreground until its origin pane disappears or dies.
 pub fn run_foreground(ctx: &Ctx, args: WatchTargetArgs) -> Result<()> {
     validate_config(&ctx.cfg.watch)?;
-    let session_name = session::resolve_existing_name(&ctx.tmux, &ctx.cfg, &args.target);
-    if !session::exists(&ctx.tmux, &session_name) {
+    let session_name = ctx.backend.resolve_name(&ctx.cfg, &args.target);
+    if !ctx.backend.exists(&session_name) {
         return Ok(());
     }
-    let Some(origin) = session::origin_pane(&ctx.tmux, &session_name) else {
-        session::set_watch_armed(&ctx.tmux, &session_name, false);
+    let Some(origin) = ctx.backend.origin_pane(&session_name) else {
+        ctx.backend.set_watch_armed(&session_name, false)?;
         return Ok(());
     };
     if !origin_is_alive(ctx, &origin) {
-        session::set_watch_armed(&ctx.tmux, &origin, false);
+        ctx.backend.set_watch_armed(&origin, false)?;
         return Ok(());
     }
     let root = watch_root(ctx);
     let guard = match PidGuard::acquire(&root, &session_name, &origin) {
         Ok(guard) => guard,
         Err(err) => {
-            session::set_watch_armed(&ctx.tmux, &origin, false);
+            ctx.backend.set_watch_armed(&origin, false)?;
             return Err(err);
         }
     };
     let Some(guard) = guard else {
         return Ok(());
     };
-    session::set_watch_armed(&ctx.tmux, &session_name, true);
+    ctx.backend.set_watch_armed(&session_name, true)?;
     append_log(&root, &session_name, "watcher started");
     let result = watch_loop(ctx, &root, &session_name, &origin, &guard.record.token);
-    session::set_watch_armed(&ctx.tmux, &origin, false);
+    ctx.backend.set_watch_armed(&origin, false)?;
     append_log(&root, &session_name, "watcher stopped");
     result
 }
@@ -928,7 +918,7 @@ pub fn stop_if_running(ctx: &Ctx, session_name: &str) -> Result<bool> {
     let root = watch_root(ctx);
     let path = pidfile_path(&root, session_name);
     let Some(process) = active_process(&path)? else {
-        session::set_watch_armed(&ctx.tmux, session_name, false);
+        ctx.backend.set_watch_armed(session_name, false)?;
         return Ok(false);
     };
     let stop_path = stopfile_path(&root, session_name);
@@ -937,7 +927,7 @@ pub fn stop_if_running(ctx: &Ctx, session_name: &str) -> Result<bool> {
         match active_process(&path)? {
             None => {
                 clear_stop_request(&stop_path, &process.token);
-                session::set_watch_armed(&ctx.tmux, &process.origin, false);
+                ctx.backend.set_watch_armed(&process.origin, false)?;
                 append_log(&root, session_name, "watcher stopped by command");
                 return Ok(true);
             }
@@ -953,7 +943,7 @@ pub fn stop_if_running(ctx: &Ctx, session_name: &str) -> Result<bool> {
 
 /// Stop the watcher recorded for one session and clear its armed marker.
 pub fn stop_watcher(ctx: &Ctx, args: WatchTargetArgs) -> Result<()> {
-    let session_name = session::resolve_existing_name(&ctx.tmux, &ctx.cfg, &args.target);
+    let session_name = ctx.backend.resolve_name(&ctx.cfg, &args.target);
     if !stop_if_running(ctx, &session_name)? {
         die(
             code::NOT_FOUND,

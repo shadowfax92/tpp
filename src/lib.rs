@@ -1,6 +1,6 @@
-//! tpp — tmux++. An ergonomic wrapper around the `tmux` binary for sharing, running,
-//! capturing, and pasting into sessions. See `docs/DESIGN.md` for the model.
+//! Terminal session orchestration backed by tmux or Herdr.
 
+pub mod backend;
 pub mod cli;
 pub mod commands;
 pub mod config;
@@ -19,7 +19,6 @@ use commands::{compat, family, io, lifecycle, mail, meta, pane, Ctx};
 use config::Config;
 use paths::Paths;
 use store::Store;
-use tmux::Tmux;
 
 /// Parse args, build the shared context, and dispatch.
 pub fn run() -> Result<()> {
@@ -29,18 +28,16 @@ pub fn run() -> Result<()> {
     let config_path = cli.config.clone().unwrap_or_else(|| paths.config_file());
     let cfg = Config::load(&config_path)?;
 
-    // CLI flag wins over config for the socket; empty falls back to the shared tmux server.
     let socket = cli.socket.clone().or_else(|| cfg.socket.clone());
-    let tmux = Tmux::new(socket);
+    let backend = backend::select(&cfg, &paths, config_path.clone(), socket);
 
-    // Forget stale exited records (best-effort; never fails a command).
-    let store_socket = tmux.store_socket();
+    let store_socket = backend.namespace();
     let _ = Store::new(&paths, store_socket.as_deref()).prune(cfg.exit.prune_hours);
     let _ =
         mail::MailStore::new(&paths, store_socket.as_deref()).prune_archives(cfg.exit.prune_hours);
 
     let ctx = Ctx {
-        tmux,
+        backend,
         cfg,
         paths,
         config_path,
@@ -48,7 +45,6 @@ pub fn run() -> Result<()> {
         quiet: cli.quiet,
     };
 
-    // Bare `tpp` lists every tpp session on the selected tmux server.
     let cmd = cli.cmd.unwrap_or_else(|| Cmd::Ls(LsArgs::default()));
 
     match cmd {

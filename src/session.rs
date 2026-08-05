@@ -233,11 +233,10 @@ exit 0
     }
 }
 
-/// Apply the configured tpp session prefix to a session name, unless already present.
 pub fn prefixed_name(cfg: &Config, name: &str) -> String {
     let name = tgt(name);
     let prefix = cfg.session_prefix.as_str();
-    let safe_prefix = safe_session_name(prefix);
+    let safe_prefix = storage_prefix(cfg);
     let already_prefixed =
         !prefix.is_empty() && (name.starts_with(prefix) || name.starts_with(&safe_prefix));
     let prefixed = if prefix.is_empty() || already_prefixed {
@@ -246,6 +245,10 @@ pub fn prefixed_name(cfg: &Config, name: &str) -> String {
         format!("{prefix}{name}")
     };
     safe_session_name(&prefixed)
+}
+
+pub(crate) fn storage_prefix(cfg: &Config) -> String {
+    safe_session_name(&cfg.session_prefix)
 }
 
 /// Apply the configured prefix to the session component of a tmux target.
@@ -346,7 +349,7 @@ fn parse_optional_i32(value: &str) -> Option<i32> {
     value.trim().parse().ok()
 }
 
-fn pane_state_for_target(tmux: &Tmux, target: &str) -> Option<PaneState> {
+pub(crate) fn pane_state_for_target(tmux: &Tmux, target: &str) -> Option<PaneState> {
     let fmt = [
         "#{pane_dead}",
         "#{pane_pid}",

@@ -13,16 +13,16 @@ use clap::{Args, Parser, Subcommand};
 #[command(
     name = "tpp",
     version,
-    about = "tmux++ — share, run, capture, and paste into tmux sessions",
-    long_about = "tmux++ (tpp) — an ergonomic wrapper around tmux for humans and agents.\n\n\
+    about = "run, capture, and paste into tmux sessions or Herdr tabs",
+    long_about = "tpp is a terminal-workspace wrapper for humans and agents.\n\n\
         List all tpp sessions, run commands in detached sessions, capture and \
-        follow their output, and paste prompts in verbatim. Sessions live in your normal \
-        tmux server, so `tmx`, `grove`, and plain `tmux` all see them.",
+        follow their output, and paste prompts in verbatim. tmux is the default backend; \
+        `herdr-mode = true` puts sessions in named tabs inside one `tpp` workspace in Herdr.",
     disable_help_subcommand = true,
     propagate_version = true
 )]
 pub struct Cli {
-    /// tmux socket name (`tmux -L`). Default: from config, else the shared tmux server.
+    /// tmux socket name (`tmux -L`); ignored by the Herdr backend.
     #[arg(short = 'L', long, global = true, value_name = "NAME")]
     pub socket: Option<String>,
 
@@ -83,7 +83,7 @@ pub enum Cmd {
     /// Paste text into a session verbatim (bracketed) and press Enter.
     Paste(PasteArgs),
 
-    /// Bind a name to a tmux pane.
+    /// Bind a name to a multiplexer pane.
     Bind(BindArgs),
 
     /// Remove a named pane binding.
@@ -130,7 +130,7 @@ pub enum Cmd {
     /// Write a starter config (and optionally install fish completions).
     Init(InitArgs),
 
-    /// Check tmux availability and print resolved paths.
+    /// Check the selected backend and print resolved paths.
     Doctor,
 
     /// Generate shell completions (bash, zsh, fish, …).
@@ -206,8 +206,8 @@ pub struct NewArgs {
     /// Disable the per-session stuck-screen watcher.
     #[arg(long)]
     pub no_watch: bool,
-    /// Pane to nudge if the session stalls (default: the calling tmux pane).
-    #[arg(long, value_name = "TMUX_TARGET")]
+    /// Pane to nudge if the session stalls (default: the calling pane).
+    #[arg(long, value_name = "PANE")]
     pub parent_pane: Option<String>,
     /// Command to run (defaults to your shell).
     #[arg(
@@ -427,7 +427,7 @@ pub struct SendArgs {
     /// Read text from stdin.
     #[arg(long, conflicts_with = "file")]
     pub stdin: bool,
-    /// Interpret args as tmux key names (Enter, C-c, Escape) instead of literal text.
+    /// Interpret args as key names (Enter, C-c, Escape) instead of literal text.
     #[arg(short = 'k', long)]
     pub keys: bool,
     /// Use bracketed paste (verbatim multi-line; good for TUIs).
@@ -470,10 +470,10 @@ pub struct PasteArgs {
 pub struct BindArgs {
     /// Pane target name, used as pane:<NAME>.
     pub name: String,
-    /// Bind the current tmux pane from $TMUX_PANE.
+    /// Bind the current pane from the selected backend.
     #[arg(long, conflicts_with = "pane")]
     pub here: bool,
-    /// Bind an explicit tmux pane target, such as %5 or sess:1.0.
+    /// Bind an explicit pane target, such as %5, sess:1.0, or w5:p1.
     #[arg(long, value_name = "TMUX_TARGET")]
     pub pane: Option<String>,
     /// Role metadata stored on the pane.
