@@ -2,18 +2,19 @@
 
 # ➕ tpp
 
-**tmux++ — run, watch, and paste into tmux sessions, from scripts and AI agents.**
+**Run, watch, and paste into terminal sessions, from scripts and AI agents.**
 
 </div>
 
-`tpp` is a thin, fast wrapper around the real `tmux`. It doesn't run its own multiplexer — it
-shells out to `tmux`, so every `tpp` session is a normal tmux session you can also list and
-attach to with plain `tmux`.
+`tpp` is a thin orchestration layer over a terminal multiplexer. tmux remains the default
+backend. With `herdr-mode = true`, one lazy `tpp` workspace is created in the default Herdr
+session and every tpp session becomes a tab labeled with its tpp name. The command surface is
+the same on both backends.
 
 ## Why
 
 It's built to automate background agent work. Each AI coding agent — or any long-running
-command — runs in its own detached tmux session: you start it in a directory, paste a prompt
+command — runs in its own isolated terminal: you start it in a directory, paste a prompt
 into it verbatim, read its output, and kill it when it's done, all from a script. That lets you
 fire off many agents at once, let them work in parallel, and collect their results as they
 finish.
@@ -23,7 +24,8 @@ script or by hand.
 
 ## Install
 
-Requires `tmux` 3.3+ and Rust (stable). `fzf` is optional (powers the session pickers).
+Requires Rust (stable), plus either `tmux` 3.3+ or Herdr 0.8+. `fzf` is optional (powers the
+session pickers).
 
 ```sh
 cd tpp
@@ -36,7 +38,7 @@ Then, optionally:
 
 ```sh
 tpp init            # write ~/.config/tpp/config.toml
-tpp doctor          # check tmux, show resolved socket / paths
+tpp doctor          # check the selected backend and resolved paths
 ```
 
 ## Usage
@@ -45,7 +47,7 @@ tpp doctor          # check tmux, show resolved socket / paths
 # By hand
 tpp                           # list all tpp sessions (defaults to `ls`)
 tpp new -s api -- npm run dev  # detached command + stuck-screen watcher
-tpp attach api                 # attach (switch-client if you're already in tmux)
+tpp attach api                 # attach or focus its tab
 tpp cat api                    # print its recent output
 tpp tail api                   # follow it live
 tpp send -t api "rs" -e        # type "rs" + Enter into it
@@ -84,7 +86,7 @@ Run `tpp <cmd> --help` for full flags. Aliases in parentheses.
 | `children` | List sessions spawned from the current pane. `--pane %N` queries a pane, `-t SESSION` queries a session's startup pane, `--json` is machine-readable, and `-q` prints names only. |
 | `mail` | Send durable mail with `mail TARGET` or `mail send TARGET`; `mail ls` lists inbox and sent copies, while `mail read ID` prints and marks an inbox message read. Supports `-m`, `--file`, `--stdin`, `--subject`, and `--no-ping`. |
 | `reply` | Reply to an id in the caller's inbox, preserving the thread with `In-Reply-To`. |
-| `attach` (`a`) | Attach, or `switch-client` if you're already inside tmux. |
+| `attach` (`a`) | Attach or focus the selected session/tab. |
 | `rm` (`kill`) | Kill sessions. `--all` removes every tpp session, `--record` saves output first. |
 | `reap` | Remove stale detached sessions. Dead root panes are stale immediately; live sessions require root-window activity older than `[reap] ttl` (default `6h`). `--dry-run` previews reasons; output is recorded before removal by default. |
 | `exit` (`e`) | Record the current session's output, then kill it. Run it from inside the session. |
@@ -93,9 +95,9 @@ Run `tpp <cmd> --help` for full flags. Aliases in parentheses.
 | `cat` (`cap`) | Print session output. `-n N` trailing lines, `-S` full scrollback, `-e` keep colors, `-a` includes every recorded transcript in the picker, `--json`. Replays the saved transcript if the session has exited. |
 | `tail` (`follow`) | Follow output, printing new lines as they appear. |
 | `wait` | Block until `--text <s>` appears, output is `--idle`, or the pane will `--exit`. `--timeout` (exit `4`), `--json`. |
-| `send` (`s`) | Send input: literal `TEXT`, `--file`/`--stdin`, or `--keys` (tmux key names). `-e`/`--enter` appends Enter; `--verify` confirms pasted-content markers disappeared after Enter. |
+| `send` (`s`) | Send input: literal `TEXT`, `--file`/`--stdin`, or `--keys` (backend key names). `-e`/`--enter` appends Enter; `--verify` confirms pasted-content markers disappeared after Enter. |
 | `paste` | Bracketed paste + Enter, so multi-line prompts with slashes and newlines land literally. Verifies submission by default; use `--no-verify` to skip. |
-| `bind` | Bind a name to a tmux pane: `tpp bind mediator --here --role mediator` or `--pane %5`. |
+| `bind` | Bind a name to a pane: `tpp bind mediator --here --role mediator` or `--pane ID`. |
 | `targets` | List named panes with role, pane id, `session:window.pane`, and `live`/`dead` status. Supports `--json`. |
 | `unbind` | Remove a named pane binding. |
 
@@ -103,6 +105,8 @@ Also: `config`, `init`, `doctor`, `completions <shell>`, and hidden tmux-compat 
 (`has-session`, `new-session`, `send-keys`, …) that forward straight to `tmux`, so existing tmux
 scripts work unchanged. For `capture-pane`, `send-keys`, and `paste-buffer`, a bare session `-t`
 is pinned to that session's startup pane; explicit window/pane targets keep normal tmux semantics.
+These compatibility verbs intentionally exit with a usage error in Herdr mode; high-level tpp
+commands are the portable interface.
 
 ## Built for agents
 
@@ -120,7 +124,7 @@ is pinned to that session's startup pane; explicit window/pane targets keep norm
   `tpp/parent`.
   Plain session targets use the session's startup pane, even after attaches or new windows.
   If a stamped startup pane is gone, pane I/O exits `3` instead of following session focus;
-  unstamped legacy sessions retain tmux's bare-session behavior.
+  Unstamped legacy tmux sessions retain tmux's bare-session behavior.
 - **Omitted session targets** use the sole session, or an `fzf` picker when there are several.
 
 ### Agent lifecycle contracts
@@ -129,23 +133,20 @@ is pinned to that session's startup pane; explicit window/pane targets keep norm
 Use `tpp has NAME --alive` when a dispatcher needs process truth: it checks the session's
 startup pane and exits `0` only when `pane_dead=0`.
 
-`tpp new --on-exit 'CMD' -- <agent>` runs `CMD` once when the startup pane exits naturally or
-crashes, and also when the session is torn down by `tpp exit`, `tpp rm`, or raw
-`tmux kill-session`. The hook runs with `TPP_SESSION`, `TPP_SESSION_NAME`, and
-`TPP_EXIT_STATUS` in the environment; `TPP_EXIT_STATUS` is empty when tmux does not know a
-status, such as killing a still-running command. Hooked sessions force `remain-on-exit` on so
-the root pane remains inspectable even if the default config disables it. tpp stores a private
-once-marker under its state dir, so later teardown does not double-fire. Hook failures are appended to
-`<state>/hooks/<socket>/on-exit.log` and do not change the tpp command's exit path. A tmux
-server crash or `kill-server` cannot be covered because tmux cannot run hooks after it dies.
+`tpp new --on-exit 'CMD' -- <agent>` runs `CMD` once when the startup command exits and when
+the session is torn down by `tpp exit` or `tpp rm`. The tmux backend also covers raw
+`tmux kill-session`; the Herdr runner records natural exits directly, while a manually closed
+Herdr tab is reconciled the next time tpp reads its registry. The hook receives `TPP_SESSION`,
+`TPP_SESSION_NAME`, and `TPP_EXIT_STATUS`; the status is empty when a still-running command is
+removed. A private atomic marker prevents double firing.
 
 Command-bearing `tpp new` sessions also arm a detached watcher by default. Bare-shell sessions
 are not watched; use `new --no-watch` or `[watch] enabled = false` to opt out, and use
 `tpp run --watch -- <cmd>` to opt a `run` session in. Each watcher captures only the stored
-`@tpp_origin_pane`, ANSI-strips and hashes the last 30 lines, and resets whenever the screen
+startup pane, ANSI-strips and hashes the last 30 lines, and resets whenever the screen
 changes. That screen-change rule keeps animated TUIs from being mistaken for stalls.
 
-User rules run before built-ins, first match wins, and can `enter`, send arbitrary tmux `keys`,
+User rules run before built-ins, first match wins, and can `enter`, send arbitrary backend `keys`,
 `notify`, or `ignore`. A stable known prompt is handled after `prompt_stable` (default `5s`).
 The safety-checks menu selects "Keep waiting" with `Down` then `Enter`; other built-ins press
 Enter only for `Press enter to continue`, `Enter to confirm`, `Do you trust`, and
@@ -157,20 +158,21 @@ and `max_enters` caps sends per unchanged episode; a send must produce a changed
 watcher escalates. Escalation fires once per unchanged episode and respects the per-session
 `cooldown`.
 
-When `new` or `run` is called inside tmux it stores the caller's raw pane id in
-`@tpp_parent_pane`; `new --parent-pane TMUX_TARGET` overrides it. Escalation bracket-pastes
+When `new` or `run` is called inside the active backend it stores the caller's raw pane id;
+`new --parent-pane PANE` overrides it. Escalation bracket-pastes
 one message plus Enter into that pane and can also run `[watch] notify`. Notify commands receive `TPP_SESSION`,
 `TPP_SESSION_NAME`, `TPP_REASON`, `TPP_TAIL` (last five lines), `TPP_DIR`, and
 `TPP_PARENT_PANE`; only `{session}` and `{reason}` are substituted in the command string, so
 captured screen text stays out of shell templates. Shell-active punctuation in dynamic parent-nudge
 fields is rendered inert before paste. Watcher pidfiles and action logs live under
-`<state>/watch/<socket>/`; `@tpp_watch=1` marks an armed session.
+`<state>/watch/<namespace>/`; backend metadata marks an armed session.
 
 `tpp reap` is the conservative cleanup path for stale detached sessions. It never reaps attached
 sessions, reaps dead root panes with an `exited` reason, and reaps live sessions only when the
 startup pane's `window_activity` age exceeds the configured TTL. Actual removal uses the same lifecycle path as
 `rm`/`exit`, so on-exit hooks still fire once and output is recorded before the session is killed
-unless `[reap] record = false` or `--no-record` is passed.
+unless `[reap] record = false` or `--no-record` is passed. Herdr currently exposes no equivalent
+activity timestamp, so its reap path removes exited tabs but conservatively leaves live tabs alone.
 
 For prompt delivery, the supported script pattern is:
 
@@ -203,28 +205,26 @@ tpp paste -t parent "worker done"
 tpp children
 ```
 
-Bindings live as tmux pane user-options (`@tpp_name`, `@tpp_role`). Names are server-wide by
-convention; if duplicate pane options are created manually, `pane:<name>` resolves the first match.
-A removed pane cannot be listed without external state, but panes left by `remain-on-exit` show
-`dead` through tmux `pane_dead`.
+Bindings live as tmux pane user-options (`@tpp_name`, `@tpp_role`) or in the locked Herdr
+registry. Names are backend-wide. Removed panes disappear during discovery; retained finished
+command panes show `dead`.
 
-The parent/child bridge uses session options tpp already stamps (`@tpp_parent_pane` and
-`@tpp_origin_pane`), so it needs no binding or external registry.
+The parent/child bridge uses the same backend session metadata, so it needs no pane binding.
 
 ## Mail
 
 Mail separates the durable message from its notification. The mailbox is the data plane:
-the full markdown body is written synchronously to private, socket-scoped files under
-`~/.tpp/data/mail/<socket>/`. Each send gets a monotonic id in both the sender's `sent/`
+the full markdown body is written synchronously to private, backend-scoped files under
+`~/.tpp/data/mail/<namespace>/`. Each send gets a monotonic id in both the sender's `sent/`
 and the recipient's `inbox/`, and `mail read` records a small `.read` marker. The doorbell
 is only one sanitized bracketed-paste line containing the recipient id, a short excerpt,
 and the absolute inbox path. If that paste fails, the send still exits `0` and warns on
 stderr because the message remains discoverable with `mail ls`.
 
-Mailboxes default from `$TMUX_PANE`: a tpp pane uses its session mailbox and an ordinary
-human tmux pane uses a pane-keyed fallback box. `parent` follows the recorded family link;
+Mailboxes default from the current tmux or Herdr pane: a tpp pane uses its session mailbox and an
+ordinary human pane uses a pane-keyed fallback box. `parent` follows the recorded family link;
 `mail ls -t SESSION` and `mail read ID -t SESSION` are the explicit mediator escape hatch.
-Outside tmux, sending uses the `local` identity, while listing or replying without `-t`
+Outside the selected multiplexer, sending uses the `local` identity, while listing or replying without `-t`
 exits `2` with a hint.
 
 The script-friendly pattern is to put long content in a file and capture the recipient
@@ -251,6 +251,7 @@ Recorded transcripts live under `~/.tpp/data/` (`$TPP_STATE_DIR`). All settings 
 writes an annotated starter file. Highlights:
 
 ```toml
+herdr-mode = false       # true = one `tpp` workspace with a named tab per session in Herdr
 socket = ""              # tmux -L socket; "" = your normal tmux server (set a name to isolate)
 session_prefix = "tpp/"  # prefix for tpp-created sessions; "" disables prefixing
 
@@ -288,7 +289,7 @@ cooldown = "10m"
 # [[watch.rules]]
 # pattern = "Retry with a faster model"  # plain text = substring; /.../ = regex
 # action = "keys"                        # enter | keys | notify | ignore
-# keys = ["Down", "Enter"]               # tmux key names, sent in one call
+# keys = ["Down", "Enter"]               # backend key names, sent in one call
 
 # [[watch.rules]]
 # pattern = "/Sign in to continue/"
@@ -297,16 +298,22 @@ cooldown = "10m"
 
 ## How it works
 
-Every call is `tmux [-L socket] -u <subcommand>`. Sessions are tagged with tmux user-options
-(`@tpp`, `@tpp_dir`, `@tpp_origin_pane`, …) and read back in one `list-sessions` call, so
-`ls` shows every tpp session. Named pane targets are pane user-options and are discovered with
-`list-panes -a`; no state file mirrors them. High-level pane commands use the startup pane
-instead of whatever pane is currently active. `remain-on-exit` keeps a finished command's last
-screen so `cat`/`tail` still work; `exit` / `rm --record` snapshot it under
+The command layer uses one semantic backend interface for lifecycle, process state, focus,
+capture, input, pane identity, and named bindings. The tmux backend stores discovery metadata in
+tmux user-options (`@tpp`, `@tpp_dir`, `@tpp_origin_pane`, …). The Herdr backend targets the
+default Herdr session, lazily creates one workspace labeled `tpp`, and maps each tpp session to a
+root pane in a named tab. A private, locked registry under
+`~/.tpp/data/herdr/herdr%3Adefault/` records those tab/pane identities and reconciles manually
+closed tabs on subsequent commands.
+
+High-level pane commands always use the session's startup pane. Finished Herdr commands write
+their exit status before holding the terminal in an inspectable state, matching tmux
+`remain-on-exit`; `has --alive` still becomes false while `cat` remains available. `exit` /
+`rm --record` snapshot output under
 `~/.tpp/data/exited/<socket>/` before killing, and `reap` records by default. `--on-exit` hooks are stored under
 `~/.tpp/data/hooks/<socket>/` and guarded with an atomic once-marker.
 Per-session watcher pidfiles and `watch.log` use `~/.tpp/data/watch/<socket>/`; the detached
-watcher is the current `tpp` executable running `watch run` on the same selected socket.
+watcher is the current `tpp` executable running `watch run` on the same backend namespace.
 Durable mailboxes use `~/.tpp/data/mail/<socket>/`; session names and pane ids are
 percent-encoded as single filesystem components.
 
