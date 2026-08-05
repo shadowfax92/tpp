@@ -4,10 +4,20 @@
 
 use anyhow::Result;
 
+use crate::backend::BackendKind;
 use crate::cli::RawArgs;
-use crate::commands::{require_session_pane_target, Ctx};
+use crate::commands::{code, die, require_session_pane_target, Ctx};
 use crate::session::{self, now_epoch};
 use crate::tmux::{exact, tgt};
+
+fn require_tmux(ctx: &Ctx) {
+    if ctx.backend.kind() != BackendKind::Tmux {
+        die(
+            code::USAGE,
+            "tmux compatibility commands are unavailable with herdr-mode",
+        );
+    }
+}
 
 fn rewrite_short_flag_value<F>(
     args: &mut [String],
@@ -215,9 +225,10 @@ fn command_label(command: Option<&str>) -> String {
 }
 
 fn forward_print(ctx: &Ctx, verb: &str, rest: Vec<String>) -> Result<()> {
+    require_tmux(ctx);
     let mut args = vec![verb.to_string()];
     args.extend(rest);
-    match ctx.tmux.run(args) {
+    match ctx.backend.compat_run(args) {
         Ok(out) => {
             if !out.is_empty() {
                 println!("{out}");
@@ -232,70 +243,99 @@ fn forward_print(ctx: &Ctx, verb: &str, rest: Vec<String>) -> Result<()> {
 }
 
 pub fn has_session(ctx: &Ctx, raw: RawArgs) -> ! {
+    require_tmux(ctx);
     let mut args = vec!["has-session".to_string()];
     args.extend(prefix_target_args(&ctx.cfg, raw.args));
-    std::process::exit(if ctx.tmux.ok(args) { 0 } else { 1 });
+    std::process::exit(if ctx.backend.compat_ok(args) { 0 } else { 1 });
 }
 
 pub fn new_session(ctx: &Ctx, raw: RawArgs) -> Result<()> {
+    require_tmux(ctx);
     let (raw_args, meta) = rewrite_new_session_args(&ctx.cfg, raw.args.clone());
     let existed = meta
         .name
         .as_deref()
-        .map(|name| session::exists(&ctx.tmux, name))
+        .map(|name| ctx.backend.exists(name))
         .unwrap_or(false);
     let mut args = vec!["new-session".to_string()];
     args.extend(raw_args.clone());
-    ctx.tmux.run(args)?;
+    ctx.backend.compat_run(args)?;
 
     if let Some(name) = meta.name {
         let target = tgt(&name);
         if ctx.cfg.new.remain_on_exit {
-            let _ = ctx
-                .tmux
-                .run(["set-option", "-t", &target, "-w", "remain-on-exit", "on"]);
+            let _ = ctx.backend.compat_run(
+                ["set-option", "-t", &target, "-w", "remain-on-exit", "on"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+            );
         }
         let set = |k: &str, v: &str| {
-            let _ = ctx.tmux.run(["set-option", "-t", &target, k, v]);
+            let _ = ctx.backend.compat_run(
+                ["set-option", "-t", &target, k, v]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+            );
         };
         set("@tpp", "1");
         set("@tpp_dir", meta.dir.as_deref().unwrap_or(""));
         set("@tpp_cmd", &command_label(meta.command.as_deref()));
         set("@tpp_created", &now_epoch().to_string());
         if !existed {
-            session::stamp_origin_pane(&ctx.tmux, &target);
+            if let Ok(pane) = ctx.backend.compat_run(
+                ["display-message", "-p", "-t", &target, "#{pane_id}"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+            ) {
+                let pane = pane.trim();
+                if !pane.is_empty() {
+                    set("@tpp_origin_pane", pane);
+                }
+            }
         }
     }
     Ok(())
 }
 
 pub fn attach_session(ctx: &Ctx, raw: RawArgs) -> Result<()> {
+    require_tmux(ctx);
     let raw_args = prefix_target_args_with_values(&ctx.cfg, raw.args, &["-c"]);
     // Inside tmux, switch the client instead of nesting an attach.
     if std::env::var_os("TMUX").is_some() {
         if let Some(t) = find_short_flag_value(&raw_args, "-t", &["-c"]) {
-            ctx.tmux.run(["switch-client", "-t", &exact(&t)])?;
+            ctx.backend.compat_run(vec![
+                "switch-client".to_string(),
+                "-t".to_string(),
+                exact(&t),
+            ])?;
             return Ok(());
         }
     }
     let mut args = vec!["attach-session".to_string()];
     args.extend(raw_args);
-    ctx.tmux.exec(args)
+    ctx.backend.compat_exec(args)
 }
 
 pub fn forward(ctx: &Ctx, verb: &str, raw: RawArgs) -> Result<()> {
+    require_tmux(ctx);
     let args = prefix_forward_args(&ctx.cfg, verb, raw.args, |target| {
-        session::exists(&ctx.tmux, target).then(|| require_session_pane_target(&ctx.tmux, target))
+        ctx.backend
+            .exists(target)
+            .then(|| require_session_pane_target(ctx.backend.as_ref(), target))
     });
     forward_print(ctx, verb, args)
 }
 
 /// Raw passthrough: `tpp x -- <tmux args>`.
 pub fn raw(ctx: &Ctx, raw: RawArgs) -> Result<()> {
+    require_tmux(ctx);
     if raw.args.is_empty() {
         anyhow::bail!("usage: tpp x -- <tmux args...>");
     }
-    match ctx.tmux.run(raw.args) {
+    match ctx.backend.compat_run(raw.args) {
         Ok(out) => {
             if !out.is_empty() {
                 println!("{out}");

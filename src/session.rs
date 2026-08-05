@@ -346,7 +346,7 @@ fn parse_optional_i32(value: &str) -> Option<i32> {
     value.trim().parse().ok()
 }
 
-fn pane_state_for_target(tmux: &Tmux, target: &str) -> Option<PaneState> {
+pub(crate) fn pane_state_for_target(tmux: &Tmux, target: &str) -> Option<PaneState> {
     let fmt = [
         "#{pane_dead}",
         "#{pane_pid}",

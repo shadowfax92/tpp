@@ -6,7 +6,6 @@ use std::process::{Command, Stdio};
 use anyhow::Result;
 
 use crate::commands::{code, die, Ctx};
-use crate::session;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SelectionMode {
@@ -33,7 +32,7 @@ pub fn parse_fzf_output(output: &str) -> Vec<String> {
 
 pub fn one(ctx: &Ctx, explicit: Option<&str>, action: &str) -> Result<String> {
     if let Some(name) = explicit {
-        return Ok(session::resolve_existing_name(&ctx.tmux, &ctx.cfg, name));
+        return Ok(ctx.backend.resolve_name(&ctx.cfg, name));
     }
     let picks = from_all(ctx, SelectionMode::Single, action)?;
     picks
@@ -46,14 +45,14 @@ pub fn many(ctx: &Ctx, explicit: &[String], action: &str) -> Result<Vec<String>>
     if !explicit.is_empty() {
         return Ok(explicit
             .iter()
-            .map(|name| session::resolve_existing_name(&ctx.tmux, &ctx.cfg, name))
+            .map(|name| ctx.backend.resolve_name(&ctx.cfg, name))
             .collect());
     }
     from_all(ctx, SelectionMode::Multi, action)
 }
 
 fn from_all(ctx: &Ctx, mode: SelectionMode, action: &str) -> Result<Vec<String>> {
-    let sessions = session::list(&ctx.tmux)?;
+    let sessions = ctx.backend.list()?;
     let names: Vec<String> = sessions.into_iter().map(|s| s.name).collect();
     from_candidates(names, mode, action)
 }

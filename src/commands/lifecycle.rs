@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use serde::Serialize;
 
+use crate::backend::CreateSpec;
 use crate::cli::{
     AttachArgs, ExitArgs, HasArgs, LsArgs, NameArgs, NewArgs, ReapArgs, RenameArgs, RmArgs, RunArgs,
 };
@@ -17,9 +18,8 @@ use crate::commands::{
 };
 use crate::config::{parse_duration, Config, DurationCfg};
 use crate::output::{paint, print_json, Style};
-use crate::session::{self, now_epoch, NewOpts};
+use crate::session::{self, now_epoch};
 use crate::store::Store;
-use crate::tmux::exact;
 use crate::watch;
 
 const ADJECTIVES: &[&str] = &[
@@ -283,33 +283,20 @@ fn fresh_petname(
     date: &str,
     reserved: &HashSet<String>,
 ) -> String {
-    let mut unavailable = |name: &str| reserved.contains(name) || session::exists(&ctx.tmux, name);
+    let mut unavailable = |name: &str| reserved.contains(name) || ctx.backend.exists(name);
     unique_petname_with(&ctx.cfg, || random_petname(rng, date), &mut unavailable)
 }
 
 fn caller_parent_pane(ctx: &Ctx, explicit: Option<&str>) -> Result<Option<String>> {
     let source = match explicit {
         Some(target) => Some(target.trim().to_string()),
-        None if std::env::var_os("TMUX").is_some() => {
-            let pane = std::env::var("TMUX_PANE")
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| {
-                    die(
-                        code::USAGE,
-                        "inside tmux but TMUX_PANE is empty; use --parent-pane",
-                    )
-                });
-            Some(pane)
-        }
-        None => None,
+        None => ctx.backend.current_pane(),
     };
     source
         .map(|target| {
-            ctx.tmux
-                .run(["display-message", "-p", "-t", &target, "#{pane_id}"])
-                .map(|pane| pane.trim().to_string())
+            ctx.backend
+                .canonical_pane(&target)
+                .ok_or_else(|| anyhow::anyhow!("pane not found"))
                 .with_context(|| format!("resolving parent pane {target}"))
         })
         .transpose()
@@ -320,7 +307,7 @@ pub fn run(ctx: &Ctx, args: RunArgs) -> Result<()> {
     let name = match &args.name {
         Some(n) => {
             let name = session::prefixed_name(&ctx.cfg, n);
-            if session::exists(&ctx.tmux, &name) {
+            if ctx.backend.exists(&name) {
                 die(1, format!("session already exists: {n}"));
             }
             name
@@ -339,24 +326,18 @@ pub fn run(ctx: &Ctx, args: RunArgs) -> Result<()> {
     let parent_pane = caller_parent_pane(ctx, None)?;
     mail::initialize_session(ctx, &name)?;
 
-    session::create(
-        &ctx.tmux,
-        &ctx.cfg,
-        NewOpts {
-            name: name.clone(),
-            dir,
-            command: args.command.clone(),
-            width: None,
-            height: None,
-            on_exit: None,
-            parent_pane,
-            watch: args.watch,
-        },
-    )?;
+    ctx.backend.create(CreateSpec {
+        name: name.clone(),
+        dir,
+        command: args.command.clone(),
+        on_exit: None,
+        parent_pane,
+        watch: args.watch,
+    })?;
 
     if args.watch {
         if let Err(err) = watch::spawn_detached(ctx, &name) {
-            session::set_watch_armed(&ctx.tmux, &name, false);
+            ctx.backend.set_watch_armed(&name, false)?;
             return Err(err);
         }
     }
@@ -369,7 +350,7 @@ pub fn run(ctx: &Ctx, args: RunArgs) -> Result<()> {
         }
         match mail::archive_session(ctx, &name) {
             Ok(archived) => {
-                if let Err(err) = ctx.tmux.run(["kill-session", "-t", &exact(&name)]) {
+                if let Err(err) = ctx.backend.remove(&name) {
                     if let Some(archived) = archived {
                         if let Err(restore_err) = mail::restore_session(ctx, archived) {
                             eprintln!(
@@ -394,7 +375,11 @@ pub fn run(ctx: &Ctx, args: RunArgs) -> Result<()> {
     if !ctx.quiet {
         eprintln!(
             "started {name}  ({}attach: tpp attach {name}  ·  cat: tpp cat {name})",
-            ctx.tmux.socket_flag()
+            if ctx.backend.selector_args().is_empty() {
+                String::new()
+            } else {
+                format!("{} ", ctx.backend.selector_args().join(" "))
+            }
         );
     }
     Ok(())
@@ -411,7 +396,7 @@ pub fn new(ctx: &Ctx, args: NewArgs) -> Result<()> {
         ),
     };
 
-    if session::exists(&ctx.tmux, &name) {
+    if ctx.backend.exists(&name) {
         if args.attach {
             println!("{name}");
             return Ok(());
@@ -425,34 +410,20 @@ pub fn new(ctx: &Ctx, args: NewArgs) -> Result<()> {
         watch::validate_config(&ctx.cfg.watch)?;
     }
     let parent_pane = caller_parent_pane(ctx, args.parent_pane.as_deref())?;
-    let store_socket = ctx.tmux.store_socket();
-    let on_exit = args
-        .on_exit
-        .clone()
-        .map(|command| {
-            session::OnExitHook::new(&ctx.paths, store_socket.as_deref(), &name, command)
-        })
-        .transpose()?;
     mail::initialize_session(ctx, &name)?;
 
-    session::create(
-        &ctx.tmux,
-        &ctx.cfg,
-        NewOpts {
-            name: name.clone(),
-            dir,
-            command: args.command.clone(),
-            width: None,
-            height: None,
-            on_exit,
-            parent_pane,
-            watch: watch_enabled,
-        },
-    )?;
+    ctx.backend.create(CreateSpec {
+        name: name.clone(),
+        dir,
+        command: args.command.clone(),
+        on_exit: args.on_exit.clone(),
+        parent_pane,
+        watch: watch_enabled,
+    })?;
 
     if watch_enabled {
         if let Err(err) = watch::spawn_detached(ctx, &name) {
-            session::set_watch_armed(&ctx.tmux, &name, false);
+            ctx.backend.set_watch_armed(&name, false)?;
             return Err(err);
         }
     }
@@ -508,9 +479,9 @@ fn humanize_duration(secs: u64) -> String {
 }
 
 pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
-    let live = session::list(&ctx.tmux)?;
+    let live = ctx.backend.list()?;
     let now = now_epoch();
-    let mail_socket = ctx.tmux.store_socket();
+    let mail_socket = ctx.backend.namespace();
     let mail_store = mail::MailStore::new(&ctx.paths, mail_socket.as_deref());
 
     let mut rows = Vec::with_capacity(live.len());
@@ -531,7 +502,7 @@ pub fn ls(ctx: &Ctx, args: LsArgs) -> Result<()> {
 
     let show_exited = args.exited || (!args.no_exited && ctx.cfg.ls.show_exited_hours > 0);
     if show_exited {
-        let store_socket = ctx.tmux.store_socket();
+        let store_socket = ctx.backend.namespace();
         let store = Store::new(&ctx.paths, store_socket.as_deref());
         let hours = if args.exited && ctx.cfg.ls.show_exited_hours == 0 {
             24
@@ -718,21 +689,14 @@ fn remove_session_with_lifecycle(ctx: &Ctx, name: &str, record: bool) -> Result<
     if record {
         let _ = record_session(ctx, name);
     }
-    let on_exit = session::prepare_on_exit_hook(&ctx.tmux, name);
     let archived = mail::archive_session(ctx, name)?;
-    if let Some(hook) = &on_exit {
-        hook.disable_session_closed_hook(&ctx.tmux);
-    }
-    if let Err(kill_err) = ctx.tmux.run(["kill-session", "-t", &exact(name)]) {
+    if let Err(kill_err) = ctx.backend.remove(name) {
         if let Some(archived) = archived {
             mail::restore_session(ctx, archived).with_context(|| {
                 format!("kill failed for {name}: {kill_err}; restoring its mailbox")
             })?;
         }
-        return Err(kill_err.into());
-    }
-    if let Some(hook) = on_exit {
-        hook.fire(name);
+        return Err(kill_err);
     }
     Ok(())
 }
@@ -785,7 +749,11 @@ fn print_reap_report(ctx: &Ctx, report: &ReapReport) -> Result<()> {
 pub fn reap(ctx: &Ctx, args: ReapArgs) -> Result<()> {
     let ttl = reap_ttl(ctx, &args);
     let record = reap_record_enabled(ctx, &args);
-    let matched = select_reap_candidates(&session::list(&ctx.tmux)?, ttl, now_epoch());
+    let mut sessions = ctx.backend.list()?;
+    if !ctx.backend.live_activity_supported() {
+        sessions.retain(|session| session.dead);
+    }
+    let matched = select_reap_candidates(&sessions, ttl, now_epoch());
 
     let mut report = ReapReport {
         dry_run: args.dry_run,
@@ -818,24 +786,16 @@ pub fn reap(ctx: &Ctx, args: ReapArgs) -> Result<()> {
 pub fn attach(ctx: &Ctx, args: AttachArgs) -> Result<()> {
     let name = select::one(ctx, args.session.as_deref(), "attach to")?;
 
-    if !session::exists(&ctx.tmux, &name) {
+    if !ctx.backend.exists(&name) {
         no_such_session(&name);
     }
 
-    // Inside tmux we can't nest an attach — switch the current client instead.
-    if std::env::var_os("TMUX").is_some() {
-        ctx.tmux.run(["switch-client", "-t", &exact(&name)])?;
-        return Ok(());
-    }
-    ctx.tmux.exec(["attach-session", "-t", &exact(&name)])
+    ctx.backend.focus(&name)
 }
 
 pub fn rm(ctx: &Ctx, args: RmArgs) -> Result<()> {
     let targets: Vec<String> = if args.all {
-        session::list(&ctx.tmux)?
-            .into_iter()
-            .map(|s| s.name)
-            .collect()
+        ctx.backend.list()?.into_iter().map(|s| s.name).collect()
     } else {
         select::many(ctx, &args.sessions, "remove")?
     };
@@ -848,7 +808,7 @@ pub fn rm(ctx: &Ctx, args: RmArgs) -> Result<()> {
     let mut missing = false;
     let mut failed = false;
     for name in &targets {
-        if !session::exists(&ctx.tmux, name) {
+        if !ctx.backend.exists(name) {
             eprintln!("tpp: {}", no_such_session_message(name));
             missing = true;
             continue;
@@ -876,12 +836,12 @@ pub fn rm(ctx: &Ctx, args: RmArgs) -> Result<()> {
 pub fn exit(ctx: &Ctx, args: ExitArgs) -> Result<()> {
     let name = if let Some(name) = args.session.as_deref() {
         select::one(ctx, Some(name), "exit")?
-    } else if let Some(name) = current_session(&ctx.tmux) {
+    } else if let Some(name) = current_session(ctx.backend.as_ref()) {
         name
     } else {
         select::one(ctx, None, "exit")?
     };
-    if !session::exists(&ctx.tmux, &name) {
+    if !ctx.backend.exists(&name) {
         no_such_session(&name);
     }
     remove_session_with_lifecycle(ctx, &name, !args.no_record)?;
@@ -892,7 +852,7 @@ pub fn exit(ctx: &Ctx, args: ExitArgs) -> Result<()> {
 }
 
 pub fn clear(ctx: &Ctx) -> Result<()> {
-    let store_socket = ctx.tmux.store_socket();
+    let store_socket = ctx.backend.namespace();
     let n = Store::new(&ctx.paths, store_socket.as_deref()).clear()?;
     mail::MailStore::new(&ctx.paths, store_socket.as_deref()).clear_archives()?;
     if ctx.json {
@@ -908,28 +868,20 @@ pub fn has(ctx: &Ctx, args: HasArgs) -> Result<()> {
         Some(n) => n,
         None => die(2, "usage: tpp has <session>"),
     };
-    let name = session::resolve_existing_name(&ctx.tmux, &ctx.cfg, &name);
+    let name = ctx.backend.resolve_name(&ctx.cfg, &name);
     if args.alive {
-        if !session::exists(&ctx.tmux, &name) {
+        if !ctx.backend.exists(&name) {
             std::process::exit(code::NOT_FOUND);
         }
-        std::process::exit(if session::is_alive(&ctx.tmux, &name) {
-            0
-        } else {
-            1
-        });
+        std::process::exit(if ctx.backend.is_alive(&name) { 0 } else { 1 });
     }
-    std::process::exit(if session::exists(&ctx.tmux, &name) {
-        0
-    } else {
-        1
-    });
+    std::process::exit(if ctx.backend.exists(&name) { 0 } else { 1 });
 }
 
 pub fn rename(ctx: &Ctx, args: RenameArgs) -> Result<()> {
     let (session_name, new_name) = match args.names.as_slice() {
         [session_name, new_name] => (
-            session::resolve_existing_name(&ctx.tmux, &ctx.cfg, session_name),
+            ctx.backend.resolve_name(&ctx.cfg, session_name),
             session::prefixed_name(&ctx.cfg, new_name),
         ),
         [new_name] => (
@@ -939,19 +891,18 @@ pub fn rename(ctx: &Ctx, args: RenameArgs) -> Result<()> {
         _ => die(2, "usage: tpp rename [SESSION] <NEW_NAME>"),
     };
 
-    if !session::exists(&ctx.tmux, &session_name) {
+    if !ctx.backend.exists(&session_name) {
         no_such_session(&session_name);
     }
-    let watch_marked = session::watch_armed(&ctx.tmux, &session_name);
+    let watch_marked = ctx.backend.watch_armed(&session_name);
     let watch_stopped = watch::stop_if_running(ctx, &session_name)?;
     let restart_watch = watch_marked || watch_stopped;
-    ctx.tmux
-        .run(["rename-session", "-t", &exact(&session_name), &new_name])?;
+    ctx.backend.rename(&session_name, &new_name)?;
     mail::rename_session(ctx, &session_name, &new_name)?;
     if restart_watch {
-        session::set_watch_armed(&ctx.tmux, &new_name, true);
+        ctx.backend.set_watch_armed(&new_name, true)?;
         if let Err(err) = watch::spawn_detached(ctx, &new_name) {
-            session::set_watch_armed(&ctx.tmux, &new_name, false);
+            ctx.backend.set_watch_armed(&new_name, false)?;
             return Err(err);
         }
     }

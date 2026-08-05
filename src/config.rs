@@ -16,12 +16,15 @@ fn default_session_prefix() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    /// Use tabs in the default Herdr session instead of tmux sessions.
+    #[serde(rename = "herdr-mode")]
+    pub herdr_mode: bool,
     /// tmux socket name (`tmux -L <name>`). Empty/unset = the default tmux server, so tpp
     /// sessions live alongside your normal ones. Set a name to isolate them.
     pub socket: Option<String>,
     /// Command run by `tpp new`/`tpp run` when none is given. Defaults to `$SHELL`.
     pub shell: Option<String>,
-    /// Prefix applied to all tpp-created tmux session names. Empty = no prefix.
+    /// Prefix applied to all tpp-created session names. Empty = no prefix.
     #[serde(default = "default_session_prefix")]
     pub session_prefix: String,
     pub ls: LsCfg,
@@ -152,6 +155,7 @@ pub enum WatchAction {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            herdr_mode: false,
             socket: None,
             shell: None,
             session_prefix: default_session_prefix(),
@@ -372,14 +376,16 @@ impl Config {
 pub const STARTER_CONFIG: &str = r#"# tpp configuration  (~/.config/tpp/config.toml)
 # Every setting below is shown at its default — delete what you don't need to change.
 
-# tmux socket. Empty = the default tmux server, so tpp sessions show up in your normal
-# tmux (and in `tmx`). Set a name (e.g. "tpp") to give tpp its own isolated server.
+# Put tpp sessions in tabs inside a dedicated workspace in the main Herdr session.
+herdr-mode = false
+
+# tmux-only socket. Empty = the default tmux server. Ignored when herdr-mode is true.
 socket = ""
 
 # Command for `tpp new`/`tpp run` when you don't pass one. Empty = $SHELL.
 shell = ""
 
-# Prefix applied to all tpp-created tmux session names. Empty = no prefix.
+# Prefix applied to all tpp-created session names and Herdr tab labels. Empty = no prefix.
 session_prefix = "tpp/"
 
 [ls]
@@ -463,6 +469,23 @@ mod tests {
     #[test]
     fn default_session_prefix_is_tpp_path() {
         assert_eq!(Config::default().session_prefix, "tpp/");
+    }
+
+    #[test]
+    fn herdr_mode_defaults_off() {
+        assert!(!Config::default().herdr_mode);
+    }
+
+    #[test]
+    fn parse_hyphenated_herdr_mode() {
+        let cfg = Config::parse("herdr-mode = true\n").unwrap();
+
+        assert!(cfg.herdr_mode);
+    }
+
+    #[test]
+    fn starter_config_documents_herdr_mode() {
+        assert!(STARTER_CONFIG.contains("herdr-mode = false"));
     }
 
     #[test]

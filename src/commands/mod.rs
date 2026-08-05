@@ -9,14 +9,14 @@ pub mod meta;
 pub mod pane;
 pub mod select;
 
+use crate::backend::{Backend, BackendRef, CaptureSpec};
 use crate::config::Config;
 use crate::paths::Paths;
-use crate::session::{self, SessionInfo};
-use crate::tmux::{tgt, Tmux, TmuxError};
+use crate::session::SessionInfo;
 
 /// Everything a command needs: tmux access, loaded config, resolved paths, and output flags.
 pub struct Ctx {
-    pub tmux: Tmux,
+    pub backend: BackendRef,
     pub cfg: Config,
     pub paths: Paths,
     pub config_path: std::path::PathBuf,
@@ -63,30 +63,33 @@ impl std::fmt::Display for OriginPaneGone {
 }
 
 /// Resolve a session to its live startup pane while preserving unstamped legacy fallback.
-pub(crate) fn session_pane_target(tmux: &Tmux, name: &str) -> Result<String, OriginPaneGone> {
-    let Some(pane) = session::origin_pane(tmux, name) else {
-        return Ok(tgt(name));
+pub(crate) fn session_pane_target(
+    backend: &dyn Backend,
+    name: &str,
+) -> Result<String, OriginPaneGone> {
+    let Some(pane) = backend.origin_pane(name) else {
+        return Ok(name.trim().trim_start_matches('=').to_string());
     };
-    let pane_resolves = tmux
-        .run(["display-message", "-p", "-t", &pane, "#{pane_id}"])
-        .is_ok_and(|resolved| resolved.trim() == pane);
-    if pane_resolves || !session::exists(tmux, name) {
+    let pane_resolves = backend.canonical_pane(&pane).as_deref() == Some(pane.as_str());
+    if pane_resolves || !backend.exists(name) {
         return Ok(pane);
     }
-    Err(OriginPaneGone { session: tgt(name) })
+    Err(OriginPaneGone {
+        session: name.trim().trim_start_matches('=').to_string(),
+    })
 }
 
 /// Resolve the startup pane or exit through the stable not-found path.
-pub(crate) fn require_session_pane_target(tmux: &Tmux, name: &str) -> String {
-    session_pane_target(tmux, name).unwrap_or_else(|err| die(code::NOT_FOUND, err.to_string()))
+pub(crate) fn require_session_pane_target(backend: &dyn Backend, name: &str) -> String {
+    session_pane_target(backend, name).unwrap_or_else(|err| die(code::NOT_FOUND, err.to_string()))
 }
 
 /// Resolve the session a single-target command should act on.
 pub fn resolve_one_target(ctx: &Ctx, explicit: Option<&str>) -> String {
     if let Some(name) = explicit {
-        return session::resolve_existing_name(&ctx.tmux, &ctx.cfg, name);
+        return ctx.backend.resolve_name(&ctx.cfg, name);
     }
-    let sessions = session::list(&ctx.tmux).unwrap_or_default();
+    let sessions = ctx.backend.list().unwrap_or_default();
     match sessions.len() {
         1 => sessions[0].name.clone(),
         0 => die(
@@ -109,33 +112,24 @@ pub fn resolve_one_target(ctx: &Ctx, explicit: Option<&str>) -> String {
 /// Capture a pane's contents. `lines = Some(0)` is the visible screen only; `Some(n)` reaches
 /// `n` lines into history; `all_history` grabs everything.
 pub fn capture(
-    tmux: &Tmux,
+    backend: &dyn Backend,
     name: &str,
     lines: Option<u32>,
     escape: bool,
     all_history: bool,
-) -> Result<String, TmuxError> {
-    let target = session_pane_target(tmux, name).map_err(|_| TmuxError::NotFound)?;
-    let mut args: Vec<String> = vec![
-        "capture-pane".into(),
-        "-p".into(),
-        "-J".into(),
-        "-t".into(),
-        target,
-    ];
-    if escape {
-        args.push("-e".into());
-    }
-    if all_history {
-        args.push("-S".into());
-        args.push("-".into());
-    } else if let Some(n) = lines {
-        if n > 0 {
-            args.push("-S".into());
-            args.push(format!("-{n}"));
-        }
-    }
-    tmux.run(args).map(|raw| strip_dead_pane_overlay(&raw))
+) -> anyhow::Result<String> {
+    let target = session_pane_target(backend, name)
+        .map_err(|_| anyhow::anyhow!("origin pane gone for {name}"))?;
+    backend
+        .capture(
+            &target,
+            CaptureSpec {
+                lines,
+                escape,
+                all_history,
+            },
+        )
+        .map(|raw| strip_dead_pane_overlay(&raw))
 }
 
 /// Drop tmux's dead-pane chrome when it is the capture's final non-blank line.
@@ -178,41 +172,30 @@ pub fn trim_trailing_blank(s: &str) -> String {
 }
 
 /// Whether the output pane's command has exited.
-pub fn pane_dead(tmux: &Tmux, name: &str) -> bool {
-    let Ok(target) = session_pane_target(tmux, name) else {
+pub fn pane_dead(backend: &dyn Backend, name: &str) -> bool {
+    let Ok(target) = session_pane_target(backend, name) else {
         return true;
     };
-    tmux.run(["display-message", "-p", "-t", &target, "#{pane_dead}"])
-        .map(|s| s.trim() == "1")
-        .unwrap_or(false)
+    backend.pane_state(&target).is_some_and(|pane| pane.dead)
 }
 
 /// Exit status of a dead pane, if tmux reports one.
-pub fn pane_dead_status(tmux: &Tmux, name: &str) -> Option<i32> {
-    let target = session_pane_target(tmux, name).ok()?;
-    tmux.run([
-        "display-message",
-        "-p",
-        "-t",
-        &target,
-        "#{pane_dead_status}",
-    ])
-    .ok()
-    .and_then(|s| s.trim().parse().ok())
+pub fn pane_dead_status(backend: &dyn Backend, name: &str) -> Option<i32> {
+    let target = session_pane_target(backend, name).ok()?;
+    backend
+        .pane_state(&target)
+        .and_then(|pane| pane.exit_status)
 }
 
 /// The session the caller is running inside (requires `$TMUX`), if any.
-pub fn current_session(tmux: &Tmux) -> Option<String> {
-    std::env::var_os("TMUX")?;
-    tmux.run(["display-message", "-p", "#{session_name}"])
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+pub fn current_session(backend: &dyn Backend) -> Option<String> {
+    backend.current_session()
 }
 
 /// Look up a session's metadata in the current tmux server by exact name.
-pub fn find_session(tmux: &Tmux, name: &str) -> Option<SessionInfo> {
-    session::list(tmux)
+pub fn find_session(backend: &dyn Backend, name: &str) -> Option<SessionInfo> {
+    backend
+        .list()
         .unwrap_or_default()
         .into_iter()
         .find(|s| s.name == name)
@@ -223,13 +206,13 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{resolve_one_target, strip_dead_pane_overlay, Ctx};
+    use crate::backend::{select, BackendRef};
     use crate::config::Config;
     use crate::paths::Paths;
-    use crate::tmux::Tmux;
 
     fn ctx_with_prefix(prefix: &str) -> Ctx {
         Ctx {
-            tmux: Tmux::new(Some(format!("tpp-test-{}", std::process::id()))),
+            backend: backend(prefix),
             cfg: Config {
                 session_prefix: prefix.to_string(),
                 ..Config::default()
@@ -242,6 +225,22 @@ mod tests {
             json: false,
             quiet: true,
         }
+    }
+
+    fn backend(prefix: &str) -> BackendRef {
+        let paths = Paths {
+            config_dir: PathBuf::new(),
+            state_dir: PathBuf::new(),
+        };
+        select(
+            &Config {
+                session_prefix: prefix.to_string(),
+                ..Config::default()
+            },
+            &paths,
+            PathBuf::new(),
+            Some(format!("tpp-test-{}", std::process::id())),
+        )
     }
 
     #[test]
